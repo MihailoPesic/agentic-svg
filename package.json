@@ -1,0 +1,32 @@
+{
+  "name": "agentic-svg",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Raster-to-SVG converter that traces a base, then refines against a perceptual error map in a loop.",
+  "keywords": ["svg", "vectorize", "raster-to-vector", "image-tracing", "vtracer", "potrace"],
+  "license": "MIT",
+  "author": "Mihailo Pesic",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MihailoPesic/agentic-svg.git"
+  },
+  "bin": {
+    "agentic-svg": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "cli": "node src/cli.js",
+    "server": "node src/server/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@neplex/vectorizer": "^0.1.0",
+    "@resvg/resvg-js": "^2.6.2",
+    "pixelmatch": "^7.2.0",
+    "sharp": "^0.35.2",
+    "ssim.js": "^3.5.0",
+    "svgo": "^4.0.1"
+  }
+}
