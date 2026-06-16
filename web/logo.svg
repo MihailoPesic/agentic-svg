@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 100" width="360" height="100" role="img" aria-label="SVGForge">
+  <g>
+    <polygon points="50,8 92,84 8,84" fill="#ff7a59"/>
+    <circle cx="50" cy="58" r="20" fill="#1b1d2a"/>
+  </g>
+  <text x="116" y="62" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="44" fill="#1b1d2a">SVG<tspan font-weight="700">Forge</tspan></text>
+  <text x="118" y="84" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2" fill="#8a8d9b">CONVERGENT VECTORIZATION</text>
+</svg>

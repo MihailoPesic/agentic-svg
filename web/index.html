@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SVGForge — Convergent Vectorization</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><polygon points='50,10 90,80 10,80' fill='%23ff7a59'/></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 100 100" width="28" height="28"><polygon points="50,8 92,84 8,84" fill="#ff7a59"/><circle cx="50" cy="58" r="20" fill="#1b1d2a"/></svg>
+      <span>SVG<b>Forge</b></span>
+      <em>convergent vectorization</em>
+    </div>
+    <a class="ghost" href="https://github.com/MihailoPesic/agentic-svg" target="_blank" rel="noopener">GitHub</a>
+  </header>
+
+  <main>
+    <section id="intro">
+      <h1>Vectorize images that one-shot tracers <span class="hl">give up on</span>.</h1>
+      <p class="sub">SVGForge traces a base, then <b>renders it, measures the error, and refines on a loop</b> — converging to an SVG that actually looks like your image. Gradients, soft edges, photos: things plain vectorizers flatten or shatter.</p>
+    </section>
+
+    <section id="workspace">
+      <div class="controls">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="file" accept="image/*" hidden />
+          <div class="dz-inner">
+            <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0L8 8m4-4l4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+            <span><b>Drop an image</b>, click to browse, or paste (Ctrl+V)</span>
+            <small>PNG · JPG · WebP — logos, illustrations, photos</small>
+          </div>
+        </label>
+
+        <div class="opts">
+          <div class="quality">
+            <label>Quality / fidelity</label>
+            <div class="seg" id="quality">
+              <button data-q="draft">Draft</button>
+              <button data-q="balanced" class="active">Balanced</button>
+              <button data-q="high">High</button>
+              <button data-q="max">Max</button>
+            </div>
+            <small id="qhint">Balanced — good fidelity, compact file. ~3s.</small>
+          </div>
+          <button id="run" class="primary" disabled>Vectorize →</button>
+        </div>
+
+        <div class="samples">
+          <span>Try:</span>
+          <button class="chip" data-sample="samples/logo.png">logo</button>
+          <button class="chip" data-sample="samples/scene.png">gradient scene</button>
+          <button class="chip" data-sample="samples/gradient.png">radial gradient</button>
+          <button class="chip" data-sample="samples/orb.png">subject + clutter</button>
+        </div>
+      </div>
+
+      <div class="stage" id="stage" hidden>
+        <div class="panels">
+          <figure class="panel">
+            <figcaption>Original <span class="tag" id="origTag"></span></figcaption>
+            <div class="canvas-wrap"><img id="origImg" alt="original" /></div>
+          </figure>
+          <figure class="panel">
+            <figcaption>SVG result <span class="tag live" id="resTag">idle</span></figcaption>
+            <div class="canvas-wrap checker" id="resWrap">
+              <div class="compare" id="compare">
+                <div id="resHolder"></div>
+                <div class="compare-before" id="compareBefore" hidden><img id="compareImg" alt="original" /></div>
+                <div class="compare-handle" id="compareHandle" hidden role="slider" aria-label="Reveal original" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" tabindex="0">
+                  <span class="compare-line"></span>
+                  <span class="compare-grip"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6L4 12l5 6M15 6l5 6-5 6"/></svg></span>
+                </div>
+              </div>
+            </div>
+          </figure>
+        </div>
+
+        <div class="telemetry">
+          <div class="bars">
+            <div class="prog"><div class="prog-fill" id="progFill"></div></div>
+            <div class="phase" id="phase">Ready.</div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="chart" width="520" height="120"></canvas>
+            <div class="chart-legend"><span class="dot trace"></span>trace baseline <span class="dot refine"></span>converging error (RMSE)</div>
+          </div>
+          <div class="stats" id="stats"></div>
+        </div>
+
+        <div class="actions" id="actions" hidden>
+          <button id="download" class="primary">⤓ Download SVG</button>
+          <button id="copy" class="ghost">Copy SVG</button>
+          <button id="toggleView" class="ghost" aria-pressed="false">Compare ⇄</button>
+          <span class="winline" id="winline"></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="pitch">
+      <div class="card"><h3>The loop nobody ships</h3><p>VTracer, Potrace, Illustrator trace once and stop. We close the feedback loop: render → diff → spend shapes where the error is. Same idea as research-grade LIVE, no GPU required.</p></div>
+      <div class="card"><h3>Spends detail where it matters</h3><p>Error-targeted refinement puts shapes on the parts that are wrong, not uniformly. A clean logo finishes in a handful of shapes; a gradient photo gets as many as it needs.</p></div>
+      <div class="card"><h3>Clean, editable, layered</h3><p>A real traced skeleton underneath, corrections stacked on top — not a blind mesh of polygons. Resolution-independent and ready for print, laser, vinyl, embroidery.</p></div>
+    </section>
+  </main>
+
+  <footer>SVGForge · trace → render → measure → refine · <span id="status">●</span> <span id="statusText">checking…</span></footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
