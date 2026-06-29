@@ -16,6 +16,7 @@ import { Model } from './optimizer.js';
 import { TRACE_PRESETS } from './trace.js';
 import { computeSaliency } from './saliency.js';
 import { fitGradient, renderGradient, gradientSvg } from './gradient.js';
+import { fitRegionGradients } from './regiongradient.js';
 
 /** Strip the outer <svg> wrapper, returning inner markup only. */
 export function innerSvg(svg) {
@@ -107,6 +108,27 @@ export async function converge(input, opts = {}) {
         chosenRmse = fit.rmse;
         baseKind = `gradient(${fit.kind})`;
         baseW = W; baseH = H; refineScale = 1; // gradient base lives in refine space
+      }
+    }
+
+    // Per-region gradients: replace the posterized/banded flat regions a photo
+    // trace produces with native per-region linear/radial gradient fills. Only
+    // when the current base still isn't close, only when the segmentation isn't
+    // shattered by noise, and only if it actually beats the current base.
+    if (opts.tryRegionGradient !== false) {
+      const curD = dssim(work.data, seedData, W, H);
+      if (curD > 0.02) {
+        const rg = fitRegionGradients(work, { levels: 4 });
+        if (!rg.coverage.fragmented) {
+          const rgSeed = renderSvgToRgba(rg.svg, W, H);
+          if (dssim(work.data, rgSeed.data, W, H) < curD) {
+            baseSvg = rg.defs + rg.body;
+            seedData = rgSeed.data;
+            chosenRmse = rmse(work.data, rgSeed.data, W, H);
+            baseKind = 'region-gradient';
+            baseW = W; baseH = H; refineScale = 1;
+          }
+        }
       }
     }
     traceMetrics = { rmse: chosenRmse, dssim: dssim(work.data, seedData, W, H), base: baseKind };
