@@ -39,7 +39,8 @@ export class Model {
     this.baseW = opts.baseW || this.W;
     this.baseH = opts.baseH || this.H;
     this.refineScale = opts.refineScale || 1;
-    this.maxArea = Infinity; // optional per-shape area cap (set during refinement)
+    this.maxArea = Infinity;   // optional per-shape area cap (set during refinement)
+    this.maxExtent = Infinity; // optional per-shape bounding-box span cap
     this.score = differenceFull(this.target, this.current, this.W, this.H);
     this.shapes = []; // { shape, color:[r,g,b], alpha }
   }
@@ -48,9 +49,20 @@ export class Model {
   _energy(shape, alpha) {
     const lines = shape.rasterize(this.W, this.H);
     const area = scanlineArea(lines);
-    // Reject degenerate or oversized shapes — unbounded growth produces big
-    // translucent blobs that shave RMSE but wreck the picture.
+    // Reject degenerate or oversized shapes. Cap BOTH area and bounding-box span:
+    // a thin sliver triangle has tiny area but can stretch across the whole image
+    // (the stray "paper-airplane" streak), so the area cap alone isn't enough.
     if (area < 1 || area > this.maxArea) return { score: this.score + 1, color: [0, 0, 0], lines };
+    if (this.maxExtent !== Infinity) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const l of lines) {
+        if (l.y < minY) minY = l.y; if (l.y > maxY) maxY = l.y;
+        if (l.x1 < minX) minX = l.x1; if (l.x2 > maxX) maxX = l.x2;
+      }
+      if (maxX - minX > this.maxExtent || maxY - minY > this.maxExtent) {
+        return { score: this.score + 1, color: [0, 0, 0], lines };
+      }
+    }
     const color = computeColor(this.target, this.current, lines, alpha, this.W);
     const score = differencePartial(this.target, this.current, lines, color, alpha, this.score, this.W, this.H);
     return { score, color, lines };
@@ -144,12 +156,14 @@ export class Model {
       x: Math.max(0, cx - hw), y: Math.max(0, cy - hh),
       w: Math.min(this.W, hw * 2), h: Math.min(this.H, hh * 2),
     };
-    // Cap shape area to the local neighbourhood (a few cells), never more than a
-    // small fraction of the whole image — this is what stops giant blob artifacts.
+    // Cap shape area AND bounding-box span to the local neighbourhood — this is
+    // what stops both giant translucent blobs and thin image-spanning slivers.
     const cellArea = chosen.w * chosen.h;
     this.maxArea = Math.min(this.W * this.H * maxAreaFrac, Math.max(cellArea * 9, 256));
+    this.maxExtent = Math.min(Math.max(this.W, this.H) * 0.22, Math.max(region.w, region.h) * 2.5);
     const best = this.bestShapeIn(type, alpha, region, opts);
     this.maxArea = Infinity;
+    this.maxExtent = Infinity;
     if (best && best.score < this.score - epsilon) {
       this.add(best, alpha);
       return { improved: true, score: this.score };
