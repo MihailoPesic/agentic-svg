@@ -85,8 +85,24 @@ export function planConversion(analysis, quality = 'balanced', overrides = {}) {
     };
   }
 
+  // Photos: soft rotated-ellipse refinement over fine cells dissolves the
+  // posterized banding instead of stamping flat polygon slabs.
+  if (analysis.type === 'photo') {
+    return {
+      strategy: 'trace-refine',
+      tracePresetName: 'poster',
+      shape: 'rotatedellipse',
+      alpha: quality === 'draft' || quality === 'balanced' ? 0.55 : 0.45,
+      saliency: true,
+      ...q,
+      budget: Math.round(q.budget * 1.4),
+      refineOpts: { maxAreaFrac: 0.04, block: 12, topK: 12, expand: 1.3 },
+      ...overrides,
+    };
+  }
+
   // trace-refine is the robust default; very busy photos benefit from finer trace.
-  const tracePresetName = analysis.type === 'photo' ? 'poster' : 'flat';
+  const tracePresetName = 'flat';
   // Photos/illustrations want softer correction alpha; flat art wants opaque.
   const alpha = analysis.type === 'flat' ? 0.92 : 0.8;
   const shape = 'any';

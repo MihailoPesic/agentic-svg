@@ -34,14 +34,15 @@ export const TRACE_PRESETS = {
     spliceThreshold: 45,
     pathPrecision: 2,
   },
-  // Posterized photo: more colors, finer gradient steps.
+  // Photos: low speckle + many fine color layers is what kills the posterized
+  // banding. Polygon mode matches spline fidelity here at ~1/3 the file size.
   poster: {
     colorMode: ColorMode.Color,
     hierarchical: Hierarchical.Stacked,
-    mode: PathSimplifyMode.Spline,
-    filterSpeckle: 10,
-    colorPrecision: 7,
-    layerDifference: 8,
+    mode: PathSimplifyMode.Polygon,
+    filterSpeckle: 4,
+    colorPrecision: 8,
+    layerDifference: 4,
     cornerThreshold: 60,
     lengthThreshold: 4,
     maxIterations: 10,

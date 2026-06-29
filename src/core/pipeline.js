@@ -32,6 +32,7 @@ export async function convertImage(input, opts = {}) {
     alpha: plan.alpha,
     targetDssim: plan.targetDssim,
     plateauRelGain: plan.plateauRelGain,
+    refineOpts: plan.refineOpts,
     tracePreset,
     weightMap,
     saliency: weightMap ? false : plan.saliency,
