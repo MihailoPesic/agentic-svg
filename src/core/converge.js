@@ -133,6 +133,10 @@ export async function converge(input, opts = {}) {
     effBudget = Math.min(budget, 30);
     effRefine = { epsilon: Math.max(1e-6, model.score * 0.02), ...refineOpts };
   }
+  // When the base already matches the image closely (clean flat art / a good
+  // gradient fit), refinement only stamps polygon dents over crisp edges while
+  // shaving imperceptible RMSE. Skip it — cleaner output, smaller file.
+  if (traceMetrics && traceMetrics.dssim < 0.013) effBudget = 0;
 
   const startScore = model.score;
   let added = 0;
