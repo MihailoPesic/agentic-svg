@@ -9,7 +9,7 @@
 
 import sharp from 'sharp';
 import { vectorizeRaw } from '@neplex/vectorizer';
-import { loadImage } from './image.js';
+import { loadImage, averageColor } from './image.js';
 import { renderSvgToRgba } from './render.js';
 import { rmse, dssim } from './metrics.js';
 import { Model } from './optimizer.js';
@@ -17,6 +17,7 @@ import { TRACE_PRESETS } from './trace.js';
 import { computeSaliency } from './saliency.js';
 import { fitGradient, renderGradient, gradientSvg } from './gradient.js';
 import { fitRegionGradients } from './regiongradient.js';
+import { fitGradientOverlay } from './gradoverlay.js';
 
 /** Strip the outer <svg> wrapper, returning inner markup only. */
 export function innerSvg(svg) {
@@ -128,6 +129,29 @@ export async function converge(input, opts = {}) {
             baseKind = 'region-gradient';
             baseW = W; baseH = H; refineScale = 1;
           }
+        }
+      }
+    }
+    // Overlay native gradients onto large smooth blobs (a shaded sphere, a sun,
+    // a face) so they render as one smooth radial/linear instead of banding.
+    // Additive over whatever base we chose; on images with no clean blob it's a
+    // no-op. The seed is re-rendered so the refiner sees the smooth gradient
+    // rather than trying (and failing) to fix the banding itself.
+    if (opts.tryGradientOverlay !== false) {
+      const ov = fitGradientOverlay(work);
+      if (ov && ov.count > 0) {
+        const beforeD = dssim(work.data, seedData, W, H);
+        const t = refineScale !== 1 ? ` transform="scale(${refineScale.toFixed(5)})"` : '';
+        const withOverlay = `${baseSvg}<g id="grad-overlay"${t}>${ov.overlaySvgInner}</g>`;
+        const bg = averageColor(work);
+        const composed = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${baseW} ${baseH}"><rect width="${baseW}" height="${baseH}" fill="rgb(${bg.r},${bg.g},${bg.b})"/>${withOverlay}</svg>`;
+        const ovSeed = renderSvgToRgba(composed, W, H).data;
+        // Apply only if it genuinely improves the base — otherwise it's a no-op.
+        if (dssim(work.data, ovSeed, W, H) < beforeD) {
+          baseSvg = withOverlay;
+          seedData = ovSeed;
+          chosenRmse = rmse(work.data, seedData, W, H);
+          baseKind += '+overlay';
         }
       }
     }
