@@ -42,11 +42,15 @@ export async function convertImage(input, opts = {}) {
   let rawBytes = Buffer.byteLength(svg);
   if (doOptimize) svg = finalizeSvg(svg);
 
+  // Honest element count: the whole emitted vector, base trace included — not
+  // just the refinement primitives (which `shapesTotal` counts).
+  const elements = (svg.match(/<(path|rect|circle|ellipse|polygon|line)\b/g) || []).length;
+
   return {
     svg,
     analysis,
     plan: { quality, ...plan, tracePresetName: plan.tracePresetName },
-    metrics: { ...result.metrics, rawBytes, finalBytes: Buffer.byteLength(svg) },
+    metrics: { ...result.metrics, rawBytes, finalBytes: Buffer.byteLength(svg), elements },
     history: result.history,
   };
 }
