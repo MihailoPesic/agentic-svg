@@ -20,15 +20,12 @@ export async function analyze(input) {
   const colors = seen.size;
 
   // Edge density: fraction of pixels whose luma gradient exceeds a threshold.
-  let edges = 0, n = 0;
-  let gradSum = 0;
+  let edges = 0, n = 0, gradSum = 0;
   const luma = (o) => 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
   for (let y = 1; y < H - 1; y++) {
     for (let x = 1; x < W - 1; x++) {
       const o = (y * W + x) * 4;
-      const gx = luma(o + 4) - luma(o - 4);
-      const gy = luma(o + W * 4) - luma(o - W * 4);
-      const g = Math.abs(gx) + Math.abs(gy);
+      const g = Math.abs(luma(o + 4) - luma(o - 4)) + Math.abs(luma(o + W * 4) - luma(o - W * 4));
       gradSum += g;
       if (g > 40) edges++;
       n++;
@@ -37,9 +34,11 @@ export async function analyze(input) {
   const edgeDensity = edges / n;
   const smoothness = 1 - Math.min(1, gradSum / n / 40); // high => lots of flat/smooth area
 
-  // High edge density with a contained palette is the signature of UI /
-  // screenshots / line art — lots of crisp text and borders, few colours.
-  const text = edgeDensity > 0.1 && colors <= 260;
+  // Text/UI lives in a band of edge density: high enough for lots of crisp
+  // glyphs/borders, but below the saturation that pure noise or photos hit.
+  // Bold-outlined art (stickers, comics) sits below the band; noise above it.
+  // This keeps those out of the expensive upscale-trace path.
+  const text = edgeDensity >= 0.15 && edgeDensity < 0.42 && colors <= 200;
 
   let type;
   if (text) type = 'text';
