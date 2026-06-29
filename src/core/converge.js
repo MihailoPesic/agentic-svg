@@ -171,6 +171,21 @@ export async function converge(input, opts = {}) {
     }
   }
 
+  // Drop marginal refinement shapes (background residue / stray smears), but
+  // only keep the prune if it doesn't meaningfully degrade fidelity — on some
+  // images every shape contributes a little and pruning would hurt.
+  if (model.shapes.length) {
+    const preShapes = model.shapes;
+    const preCurrent = model.current;
+    const preScore = model.score;
+    model.prunePass();
+    if (model.score > preScore * 1.12) {
+      model.shapes = preShapes;
+      model.current = preCurrent;
+      model.score = preScore;
+    }
+  }
+
   let finalDssim = dssim(work.data, model.currentU8(), W, H);
   // Safety guard: never ship something perceptually worse than the base. On
   // already-excellent bases (e.g. a fitted gradient) RMSE-driven refinement can

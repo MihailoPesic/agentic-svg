@@ -31,6 +31,7 @@ export class Model {
     } else {
       this.current = Float32Array.from(solidImage(this.W, this.H, this.bg).data);
     }
+    this.seed = Float32Array.from(this.current); // base canvas, for the prune replay
     this.baseSvg = opts.baseSvg || null;
     // The base trace may live in a higher-resolution coordinate space than the
     // refinement canvas (so text stays crisp while the loop runs cheaply). The
@@ -154,6 +155,33 @@ export class Model {
       return { improved: true, score: this.score };
     }
     return { improved: false, score: this.score };
+  }
+
+  /**
+   * Replay the kept shapes from the base canvas with a stricter acceptance bar,
+   * re-optimizing each shape's colour for the current state and dropping any
+   * that no longer pull their weight. This removes the marginal shapes that show
+   * up as background residue / stray smears and shrinks the output.
+   * @param {number} relThreshold  min fractional score improvement to keep a shape
+   */
+  prunePass(relThreshold = 0.0008) {
+    const kept = [];
+    this.current = Float32Array.from(this.seed);
+    let score = differenceFull(this.target, this.current, this.W, this.H);
+    for (const s of this.shapes) {
+      const lines = s.shape.rasterize(this.W, this.H);
+      if (scanlineArea(lines) < 1) continue;
+      const color = computeColor(this.target, this.current, lines, s.alpha, this.W);
+      const newScore = differencePartial(this.target, this.current, lines, color, s.alpha, score, this.W, this.H);
+      if (newScore < score - score * relThreshold) {
+        drawLines(this.current, lines, color, s.alpha, this.W);
+        score = newScore;
+        kept.push({ shape: s.shape, color, alpha: s.alpha });
+      }
+    }
+    this.shapes = kept;
+    this.score = score;
+    return kept.length;
   }
 
   /** Uint8 snapshot of the working canvas (for metrics that want integer RGBA). */
