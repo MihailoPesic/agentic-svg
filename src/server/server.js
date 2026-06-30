@@ -1,4 +1,4 @@
-// SVGForge server: static web app + streaming convert API (SSE).
+// agentic-svg server: static web app + streaming convert API (SSE).
 // Zero-framework (Node http) to keep the dependency surface small.
 
 import http from 'node:http';
@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname, normalize } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { exec } from 'node:child_process';
 import { convertImage } from '../core/pipeline.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -143,6 +144,29 @@ const server = http.createServer(async (req, res) => {
 // Reap abandoned jobs even when no new requests arrive.
 setInterval(reapJobs, 60 * 1000).unref();
 
+const URL = `http://localhost:${PORT}`;
+
+// Open the default browser when launched as an app (AGENTIC_OPEN=1); a dev
+// `npm run server` leaves it off so restarts don't spawn tabs.
+function openBrowser() {
+  if (process.env.AGENTIC_OPEN !== '1') return;
+  const cmd = process.platform === 'win32' ? `start "" "${URL}"`
+    : process.platform === 'darwin' ? `open "${URL}"`
+      : `xdg-open "${URL}"`;
+  exec(cmd, () => {});
+}
+
+// If the port is taken, an instance is probably already up — just open it.
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    console.log(`agentic-svg is already running at ${URL}`);
+    openBrowser();
+    process.exit(0);
+  }
+  throw e;
+});
+
 server.listen(PORT, () => {
-  console.log(`SVGForge running →  http://localhost:${PORT}`);
+  console.log(`agentic-svg running  ->  ${URL}`);
+  openBrowser();
 });

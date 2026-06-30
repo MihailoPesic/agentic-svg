@@ -46,6 +46,13 @@ A few things worth calling out:
 
 ## Running it
 
+**Easiest (Windows):** double-click **`agentic-svg.cmd`**. It installs
+dependencies the first time, starts the local app, and opens it in your browser.
+Keep the window open while you use it; close it to stop. (`make-shortcut.cmd`
+drops a desktop shortcut with an icon if you want one.)
+
+Otherwise:
+
 ```bash
 npm install
 
