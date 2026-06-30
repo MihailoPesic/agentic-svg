@@ -18,6 +18,7 @@ import { computeSaliency } from './saliency.js';
 import { fitGradient, renderGradient, gradientSvg } from './gradient.js';
 import { fitRegionGradients } from './regiongradient.js';
 import { fitGradientOverlay } from './gradoverlay.js';
+import { fitPrimitives } from './pathfit.js';
 
 /** Strip the outer <svg> wrapper, returning inner markup only. */
 export function innerSvg(svg) {
@@ -87,7 +88,11 @@ export async function converge(input, opts = {}) {
     const traceImg = (traceRes > W || traceEnlarge)
       ? await loadImage(input, { maxSize: traceRes || W, allowEnlarge: traceEnlarge })
       : work;
-    const traceSvg = await traceRaw(traceImg, tracePreset);
+    // Post-trace geometric fitting: snap traced polylines that are really
+    // circles/ellipses to true primitives and straighten near-collinear runs.
+    // Rounder shapes, straighter edges, and much smaller paths — done before
+    // the seed render so scoring sees the fitted geometry.
+    const traceSvg = fitPrimitives(await traceRaw(traceImg, tracePreset));
     const traceInner = innerSvg(traceSvg);
     const traceSeed = renderSvgToRgba(traceSvg, W, H);
     const traceRmse = rmse(work.data, traceSeed.data, W, H);
