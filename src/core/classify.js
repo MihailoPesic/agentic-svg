@@ -4,8 +4,8 @@
 import { loadImage } from './image.js';
 
 /**
- * @returns {{type:'flat'|'illustration'|'photo', colors:number, edgeDensity:number,
- *            smoothness:number}}
+ * @returns {{type:'flat'|'illustration'|'photo'|'text', colors:number, edgeDensity:number,
+ *            smoothness:number, smoothShare:number, texture:number}}
  */
 export async function analyze(input) {
   const img = await loadImage(input, { maxSize: 128 });
@@ -20,7 +20,11 @@ export async function analyze(input) {
   const colors = seen.size;
 
   // Edge density: fraction of pixels whose luma gradient exceeds a threshold.
-  let edges = 0, n = 0, gradSum = 0;
+  // Alongside it, bucket every pixel's gradient magnitude: ~zero (flat fill),
+  // small-but-nonzero (smooth shading: skies, glows, soft light), or moderate
+  // (texture). The shares separate gradient-heavy photographic images from
+  // flat art with the same color count.
+  let edges = 0, n = 0, gradSum = 0, smoothPx = 0, texturePx = 0;
   const luma = (o) => 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
   for (let y = 1; y < H - 1; y++) {
     for (let x = 1; x < W - 1; x++) {
@@ -28,11 +32,15 @@ export async function analyze(input) {
       const g = Math.abs(luma(o + 4) - luma(o - 4)) + Math.abs(luma(o + W * 4) - luma(o - W * 4));
       gradSum += g;
       if (g > 40) edges++;
+      else if (g > 12) texturePx++;
+      else if (g > 1.5) smoothPx++;
       n++;
     }
   }
   const edgeDensity = edges / n;
   const smoothness = 1 - Math.min(1, gradSum / n / 40); // high => lots of flat/smooth area
+  const smoothShare = smoothPx / n;
+  const texture = texturePx / n;
 
   // Text/UI lives in a band of edge density: high enough for lots of crisp
   // glyphs/borders, but below the saturation that pure noise or photos hit.
@@ -40,13 +48,28 @@ export async function analyze(input) {
   // This keeps those out of the expensive upscale-trace path.
   const text = edgeDensity >= 0.15 && edgeDensity < 0.42 && colors <= 200;
 
+  // Gradient-dominant photographic images: most of the frame is smooth shading
+  // and there is real texture somewhere. Flat art fails the first test (its
+  // fills have ~zero gradient), a pure synthetic gradient fails the second
+  // (no texture at all) — both keep their cheaper routes. Without this these
+  // images land in 'illustration' and the opaque flat-trace path posterizes
+  // the shading into stepped rings.
+  const gradientPhoto = smoothShare >= 0.5 && texture >= 0.04;
+
   let type;
   if (text) type = 'text';
+  else if (gradientPhoto) type = 'photo';
   else if (colors <= 24 && edgeDensity < 0.18) type = 'flat';
   else if (colors <= 400 && edgeDensity < 0.32) type = 'illustration';
   else type = 'photo';
 
-  return { type, colors, edgeDensity: +edgeDensity.toFixed(3), smoothness: +smoothness.toFixed(3) };
+  return {
+    type, colors,
+    edgeDensity: +edgeDensity.toFixed(3),
+    smoothness: +smoothness.toFixed(3),
+    smoothShare: +smoothShare.toFixed(3),
+    texture: +texture.toFixed(3),
+  };
 }
 
 /**
