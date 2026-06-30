@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, extname, normalize } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { exec } from 'node:child_process';
-import { convertImage } from '../core/pipeline.js';
+import { Worker } from 'node:worker_threads';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const WEB = join(__dir, '..', '..', 'web');
@@ -79,6 +79,42 @@ async function handleConvertStart(req, res) {
   }
 }
 
+// Conversions run in worker_threads so a heavy job never blocks static
+// serving or a second conversion. Beyond MAX_WORKERS jobs wait in a FIFO
+// queue and the client gets a 'queued' SSE event with its position.
+const MAX_WORKERS = 2;
+let activeWorkers = 0;
+const waitQueue = []; // [{ jobId, job, res, send }]
+
+function pumpQueue() {
+  while (activeWorkers < MAX_WORKERS && waitQueue.length) {
+    const next = waitQueue.shift();
+    if (next.res.destroyed) { jobs.delete(next.jobId); continue; } // client left while queued
+    startWorker(next);
+  }
+}
+
+function startWorker({ jobId, job, res, send }) {
+  activeWorkers++;
+  const worker = new Worker(new URL('./convert-worker.js', import.meta.url), {
+    workerData: { input: job.input, quality: job.quality, saliency: job.saliency },
+  });
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    activeWorkers--;
+    jobs.delete(jobId);
+    if (!res.writableEnded) res.end();
+    pumpQueue();
+  };
+  worker.on('message', (m) => send(m.event, m.data));
+  worker.on('error', (e) => send('error', { message: String(e.message || e) }));
+  worker.on('exit', finish);
+  // Client gone (closed tab, aborted request) — stop burning CPU on it.
+  res.on('close', () => { worker.terminate(); });
+}
+
 async function handleProgress(req, res, jobId) {
   const job = jobs.get(jobId);
   if (!job || job.started) { res.writeHead(404); return res.end('no such job'); }
@@ -90,45 +126,23 @@ async function handleProgress(req, res, jobId) {
     Connection: 'keep-alive',
   });
   const send = (event, data) => {
+    if (res.destroyed || res.writableEnded) return;
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
   send('open', { jobId });
 
-  let lastPreview = 0;
-  try {
-    const result = await convertImage(job.input, {
-      quality: job.quality,
-      optimize: true,
-      overrides: typeof job.saliency === 'boolean' ? { saliency: job.saliency } : {},
-      onProgress: (p) => {
-        if (p.phase === 'analysis') {
-          send('analysis', { analysis: p.analysis, plan: p.plan });
-        } else if (p.phase === 'trace') {
-          send('trace', { svg: p.svg, rmse: p.rmse, dssim: p.dssim });
-        } else if (p.phase === 'refine') {
-          const ev = { i: p.i, budget: p.budget, added: p.added, score: p.score };
-          // Cap previews to ~8 over the whole run regardless of budget — injecting
-          // a large SVG too often can stall the browser renderer.
-          const stride = Math.max(20, Math.floor(p.budget / 8));
-          if (p.i - lastPreview >= stride && p.model) { ev.svg = p.model.toSVG(); lastPreview = p.i; }
-          send('refine', ev);
-        }
-      },
+  const entry = { jobId, job, res, send };
+  if (activeWorkers >= MAX_WORKERS) {
+    send('queued', { position: waitQueue.length + 1 });
+    waitQueue.push(entry);
+    res.on('close', () => {
+      const i = waitQueue.indexOf(entry);
+      if (i >= 0) { waitQueue.splice(i, 1); jobs.delete(jobId); }
     });
-    send('done', {
-      svg: result.svg,
-      analysis: result.analysis,
-      plan: result.plan,
-      metrics: result.metrics,
-      history: result.history,
-    });
-  } catch (e) {
-    send('error', { message: String(e.message || e) });
-  } finally {
-    jobs.delete(jobId);
-    res.end();
+    return;
   }
+  startWorker(entry);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -137,6 +151,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.startsWith('/api/progress/')) {
     return handleProgress(req, res, url.slice('/api/progress/'.length));
   }
+  if (req.method === 'GET' && url === '/api/stats') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ active: activeWorkers, queued: waitQueue.length, pending: jobs.size }));
+  }
   if (req.method === 'GET') return serveStatic(req, res);
   res.writeHead(405); res.end('method not allowed');
 });
@@ -144,22 +162,22 @@ const server = http.createServer(async (req, res) => {
 // Reap abandoned jobs even when no new requests arrive.
 setInterval(reapJobs, 60 * 1000).unref();
 
-const URL = `http://localhost:${PORT}`;
+const APP_URL = `http://localhost:${PORT}`;
 
 // Open the default browser when launched as an app (AGENTIC_OPEN=1); a dev
 // `npm run server` leaves it off so restarts don't spawn tabs.
 function openBrowser() {
   if (process.env.AGENTIC_OPEN !== '1') return;
-  const cmd = process.platform === 'win32' ? `start "" "${URL}"`
-    : process.platform === 'darwin' ? `open "${URL}"`
-      : `xdg-open "${URL}"`;
+  const cmd = process.platform === 'win32' ? `start "" "${APP_URL}"`
+    : process.platform === 'darwin' ? `open "${APP_URL}"`
+      : `xdg-open "${APP_URL}"`;
   exec(cmd, () => {});
 }
 
 // If the port is taken, an instance is probably already up — just open it.
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
-    console.log(`agentic-svg is already running at ${URL}`);
+    console.log(`agentic-svg is already running at ${APP_URL}`);
     openBrowser();
     process.exit(0);
   }
@@ -167,6 +185,6 @@ server.on('error', (e) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`agentic-svg running  ->  ${URL}`);
+  console.log(`agentic-svg running  ->  ${APP_URL}`);
   openBrowser();
 });
