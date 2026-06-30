@@ -46,10 +46,14 @@ A few things worth calling out:
 
 ## Running it
 
-**Easiest (Windows):** double-click **`agentic-svg.cmd`**. It installs
-dependencies the first time, starts the local app, and opens it in your browser.
-Keep the window open while you use it; close it to stop. (`make-shortcut.cmd`
-drops a desktop shortcut with an icon if you want one.)
+**Easiest (Windows):** run **`make-shortcut.cmd`** once to put an **agentic-svg**
+icon on your desktop, then double-click that icon whenever you want it. It starts
+the local app silently (no console window) and opens it in your browser; click it
+again any time to re-open the tab. `stop-agentic-svg.cmd` stops it.
+
+Under the hood the desktop icon runs `launch-hidden.vbs` (silent). For a visible
+window with logs, or for the very first run, double-click `agentic-svg.cmd`
+instead — it installs dependencies the first time.
 
 Otherwise:
 
