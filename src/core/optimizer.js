@@ -212,6 +212,12 @@ export class Model {
     const h = Math.round(height || bh);
     const out = [];
     out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${bw} ${bh}">`);
+    // Clip everything to the image rect. A shape may legitimately overhang an
+    // edge (its in-bounds part is what scoring sees), but the overhang must not
+    // render — a viewBox is only a coordinate map, not a clip, so without this a
+    // wide image letterboxed in a tall viewport shows stray geometry in the margins.
+    out.push(`<clipPath id="frame"><rect width="${bw}" height="${bh}"/></clipPath>`);
+    out.push(`<g clip-path="url(#frame)">`);
     out.push(`<rect width="${bw}" height="${bh}" fill="${rgb(this.bg)}"/>`);
     if (this.baseSvg) out.push(`<g id="base">${this.baseSvg}</g>`);
     if (this.shapes.length) {
@@ -225,6 +231,7 @@ export class Model {
       }
       out.push('</g>');
     }
+    out.push('</g>');
     out.push('</svg>');
     return out.join('\n');
   }
