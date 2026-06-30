@@ -70,7 +70,7 @@ export async function converge(input, opts = {}) {
   const history = [];
 
   // Perceptual-importance weighting: spend shapes where a human would look.
-  const importance = weightMap || (saliency ? computeSaliency(work) : null);
+  let importance = weightMap || (saliency ? computeSaliency(work) : null);
 
   let model;
   let baseSvg = null;
@@ -152,6 +152,14 @@ export async function converge(input, opts = {}) {
           seedData = ovSeed;
           chosenRmse = rmse(work.data, seedData, W, H);
           baseKind += '+overlay';
+          // Stop the refiner from re-faceting the smooth blobs the overlay just
+          // laid down: render the overlay's coverage and drop the refinement
+          // weight to ~zero there.
+          const maskInner = ov.overlaySvgInner.replace(/<defs>[\s\S]*?<\/defs>/g, '').replace(/fill="url\([^"]*\)"/g, 'fill="#ffffff"');
+          const maskSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${baseW} ${baseH}"><rect width="${baseW}" height="${baseH}" fill="#000000"/><g${t}>${maskInner}</g></svg>`;
+          const mask = renderSvgToRgba(maskSvg, W, H).data;
+          if (!importance) { importance = new Float32Array(W * H); importance.fill(1); }
+          for (let i = 0; i < W * H; i++) if (mask[i * 4] > 128) importance[i] = 0;
         }
       }
     }
