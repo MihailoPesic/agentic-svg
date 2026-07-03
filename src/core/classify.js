@@ -109,7 +109,8 @@ export function planConversion(analysis, quality = 'balanced', overrides = {}) {
   }
 
   // Photos: soft rotated-ellipse refinement over fine cells dissolves the
-  // posterized banding instead of stamping flat polygon slabs.
+  // posterized banding instead of stamping flat polygon slabs, and a Gaussian
+  // splat candidate competes to own the continuous shading.
   if (analysis.type === 'photo') {
     return {
       strategy: 'trace-refine',
@@ -117,6 +118,8 @@ export function planConversion(analysis, quality = 'balanced', overrides = {}) {
       shape: 'rotatedellipse',
       alpha: quality === 'draft' || quality === 'balanced' ? 0.55 : 0.45,
       saliency: true,
+      useSplats: true,
+      splatBudget: Math.min(400, Math.round(q.budget * 1.2)),
       ...q,
       budget: Math.round(q.budget * 1.4),
       refineOpts: { maxAreaFrac: 0.04, block: 12, topK: 12, expand: 1.3 },

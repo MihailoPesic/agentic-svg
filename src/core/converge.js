@@ -19,6 +19,7 @@ import { fitGradient, renderGradient, gradientSvg } from './gradient.js';
 import { fitRegionGradients } from './regiongradient.js';
 import { fitGradientOverlay } from './gradoverlay.js';
 import { fitPrimitives } from './pathfit.js';
+import { fitSplats, emitSplatsDeduped } from './splat.js';
 
 /** Strip the outer <svg> wrapper, returning inner markup only. */
 export function innerSvg(svg) {
@@ -165,6 +166,88 @@ export async function converge(input, opts = {}) {
           const mask = renderSvgToRgba(maskSvg, W, H).data;
           if (!importance) { importance = new Float32Array(W * H); importance.fill(1); }
           for (let i = 0; i < W * H; i++) if (mask[i * 4] > 128) importance[i] = 0;
+        }
+      }
+    }
+    // Gaussian-splat shading candidate. Flat fills cannot represent continuous
+    // 2D shading — SVG has no gradient meshes — but a stack of anisotropic
+    // Gaussian splats (ellipses with radial-gradient falloff) can. Build a
+    // competing base: a deliberately coarse trace whose shading error is
+    // one-sided, plus a greedy splat fit that owns the shading. Adopt it only
+    // when it renders measurably closer than the base chosen above.
+    if (opts.useSplats) {
+      // Coarse trace at full trace resolution: it supplies the color slabs and
+      // the crisp region edges (mountains, silhouettes) under the splats.
+      const shadingSvg = fitPrimitives(await traceRaw(traceImg, TRACE_PRESETS.shading));
+      const shadingSeed = renderSvgToRgba(shadingSvg, W, H);
+      // Confine splats to smooth regions: weight their error map by inverse
+      // local luma variation. Texture and noise stay with the primitive
+      // refiner, which also keeps splat colors similar enough that gradient
+      // defs dedupe well.
+      const smoothW = new Float32Array(W * H);
+      {
+        const lum = new Float32Array(W * H);
+        const D = work.data;
+        for (let i = 0; i < W * H; i++) { const o = i * 4; lum[i] = 0.299 * D[o] + 0.587 * D[o + 1] + 0.114 * D[o + 2]; }
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const i = y * W + x;
+            let s = 0, s2 = 0, c = 0;
+            for (let dy = -2; dy <= 2; dy += 2) {
+              const yy = y + dy; if (yy < 0 || yy >= H) continue;
+              for (let dx = -2; dx <= 2; dx += 2) {
+                const xx = x + dx; if (xx < 0 || xx >= W) continue;
+                const v = lum[yy * W + xx]; s += v; s2 += v * v; c++;
+              }
+            }
+            const sd = Math.sqrt(Math.max(0, s2 / c - (s / c) * (s / c)));
+            const t = Math.max(0, 1 - sd / 25);
+            smoothW[i] = 0.02 + 0.98 * t * t;
+          }
+        }
+      }
+      // Tight plateau: the greedy tail adds hundreds of near-no-op splats that
+      // cost ~120 bytes each for invisible gains.
+      const fit = fitSplats(work, shadingSeed.data, {
+        budget: opts.splatBudget || 300,
+        weightMap: smoothW,
+        plateauWindow: 40,
+        plateauRelGain: 0.015,
+      });
+      if (fit.added > 0) {
+        // Base lives in trace space, splats in work space; scale them in.
+        const sW = traceImg.width, sH = traceImg.height, sScale = sW / W;
+        const st = sScale !== 1 ? ` transform="scale(${sScale.toFixed(5)})"` : '';
+        const { defs, body } = emitSplatsDeduped(fit.splats);
+        const candSvg = `${innerSvg(shadingSvg)}<g id="splat"${st}><defs>${defs}</defs>${body}</g>`;
+        const bg = averageColor(work);
+        const composed = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${sW} ${sH}"><rect width="${sW}" height="${sH}" fill="rgb(${bg.r},${bg.g},${bg.b})"/>${candSvg}</svg>`;
+        const candSeed = renderSvgToRgba(composed, W, H).data;
+        // splatForce: the caller runs this whole pipeline twice (with and
+        // without splats) and keeps the better final render, so adopt here
+        // unconditionally. The gated path stays for single-run callers.
+        if (opts.splatForce || dssim(work.data, candSeed, W, H) < dssim(work.data, seedData, W, H) * 0.9) {
+          baseSvg = candSvg;
+          seedData = candSeed;
+          chosenRmse = rmse(work.data, seedData, W, H);
+          baseKind = 'shading+splats';
+          baseW = sW; baseH = sH; refineScale = sScale;
+          // Protect the splat cores from being re-faceted by the primitive
+          // refiner: suppress refinement where accumulated splat coverage is
+          // strong. Edges (weak coverage) stay refinable.
+          const cover = new Float32Array(W * H);
+          for (const e of fit.splats) {
+            const spans = (e.splat || e).footprint(W, H);
+            for (const sp of spans) {
+              let k = sp.y * W + sp.x1;
+              for (let x = sp.x1; x <= sp.x2; x++, k++) {
+                const a = sp.w[x - sp.x1];
+                cover[k] = 1 - (1 - cover[k]) * (1 - a);
+              }
+            }
+          }
+          if (!importance) { importance = new Float32Array(W * H); importance.fill(1); }
+          for (let i = 0; i < W * H; i++) if (cover[i] > 0.35) importance[i] = 0;
         }
       }
     }

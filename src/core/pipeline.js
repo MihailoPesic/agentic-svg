@@ -22,7 +22,7 @@ export async function convertImage(input, opts = {}) {
   const tracePreset = TRACE_PRESETS[plan.tracePresetName] || TRACE_PRESETS.flat;
   if (onProgress) onProgress({ phase: 'analysis', analysis, plan: { quality, ...plan } });
 
-  const result = await converge(input, {
+  const common = {
     strategy: plan.strategy,
     workRes: plan.workRes,
     traceRes: plan.traceRes,
@@ -37,7 +37,28 @@ export async function convertImage(input, opts = {}) {
     weightMap,
     saliency: weightMap ? false : plan.saliency,
     onProgress,
-  });
+  };
+
+  // Shading-heavy images get two full runs — flat-fill pipeline vs Gaussian
+  // splat pipeline — and we keep the better final render. Base-stage scores
+  // mispredict the final (refinement compensates differently on each base),
+  // so the only honest gate is the finished result. On a near-tie the splat
+  // run wins: continuous shading beats equal-scoring flat fills.
+  const splatEligible = plan.useSplats
+    || (analysis.type === 'illustration' && (analysis.smoothShare || 0) >= 0.3);
+  let result;
+  if (splatEligible) {
+    const flat = await converge(input, { ...common, useSplats: false });
+    const splat = await converge(input, {
+      ...common,
+      useSplats: true,
+      splatForce: true,
+      splatBudget: plan.splatBudget || Math.min(400, Math.round(plan.budget * 1.2)),
+    });
+    result = splat.metrics.finalDssim < flat.metrics.finalDssim * 1.07 ? splat : flat;
+  } else {
+    result = await converge(input, { ...common, useSplats: plan.useSplats, splatBudget: plan.splatBudget });
+  }
 
   let svg = result.svg;
   let rawBytes = Buffer.byteLength(svg);

@@ -34,6 +34,23 @@ export const TRACE_PRESETS = {
     spliceThreshold: 45,
     pathPrecision: 2,
   },
+  // Coarse base for splat-shaded photos: few wide color layers give a stable
+  // skeleton whose smooth-shading error is one-sided, so Gaussian splats can
+  // own the shading. A fine poster trace averages shading correctly (zero-mean
+  // banding residual) and no smooth splat can improve on it.
+  shading: {
+    colorMode: ColorMode.Color,
+    hierarchical: Hierarchical.Stacked,
+    mode: PathSimplifyMode.Polygon,
+    filterSpeckle: 4,
+    colorPrecision: 4,
+    layerDifference: 48,
+    cornerThreshold: 60,
+    lengthThreshold: 4,
+    maxIterations: 10,
+    spliceThreshold: 45,
+    pathPrecision: 2,
+  },
   // Photos: low speckle + many fine color layers is what kills the posterized
   // banding. Polygon mode matches spline fidelity here at ~1/3 the file size.
   poster: {
