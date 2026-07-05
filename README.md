@@ -1,10 +1,15 @@
 # agentic-svg
 
-Raster to SVG converter that refines its output in a loop instead of tracing once and stopping.
+Raster to SVG converter that refines its output in a loop instead of tracing once and stopping — and represents smooth shading with 2D Gaussian splats emitted as plain SVG.
 
 Normal vectorizers (VTracer, Potrace, Illustrator's Image Trace) do a single pass. They're great on flat logos and useless on anything with a gradient, soft shading, or a photo — the output either flattens smooth areas into solid blobs or shatters them into thousands of shapes. agentic-svg traces a base, renders it back to pixels, measures where it's wrong, and spends extra shapes only on those spots. Repeat until it stops improving.
 
 It's the same idea as the research vectorizers (LIVE, DiffVG) but without the differentiable CUDA renderer — greedy hill-climbing does the refinement, so it's plain Node and runs on any machine.
+
+Two things here that I haven't seen shipped elsewhere:
+
+1. **The converge loop itself.** Every open-source tracer is fire-and-forget; this one measures its own output and fixes the worst parts until a perceptual target is hit.
+2. **Gaussian-splat shading in pure SVG.** SVG has no gradient meshes, so continuous 2D shading is the thing no vectorizer can represent — flat fills posterize it into rings and bands. But an anisotropic 2D Gaussian is exactly an `<ellipse>` filled with a radial gradient. For shading-heavy images the pipeline greedily fits a few hundred soft Gaussian splats (closed-form optimal color per splat, hill-climbed position/scale/rotation/opacity) over a coarse color skeleton, and the result is glossy, band-free shading in a file that opens in any browser or editor. Same representation as the GaussianImage line of research, minus the GPU, plus a standards-compliant output.
 
 ![comparison](web/hero.png)
 
@@ -43,6 +48,13 @@ A few things worth calling out:
 - **Shape size is capped** to the local region during refinement. Without that, a shape seeded in a small area can grow to cover the whole image and leave a big translucent smear.
 - **Importance weighting** (optional, on for non-flat images) biases refinement toward distinct/central subjects so the foreground stays sharp while a busy background is left approximate.
 - **Safety guard:** the refinement objective is RMSE, but on already-clean bases shaving RMSE can add structure that hurts perceptual quality. If the final result scores worse than the base, the refinement layer is thrown away.
+- **Gaussian splats for shading.** Shading-heavy images (detected by a smooth-gradient share signal) get two full runs — the flat-fill pipeline and a splat pipeline (coarse color skeleton + greedy Gaussian splat fit confined to smooth regions) — and the better final render wins. Each splat's optimal color has a closed form; the internal alpha profile is defined as the piecewise interpolation of the emitted gradient stops, so what the optimizer scores is exactly what the SVG renders (verified to < 0.011 RMSE against resvg). Gradient defs are deduped by quantized color+opacity, so hundreds of splats share a few dozen defs.
+
+## Benchmark
+
+`node scripts/benchmark.js` scores every contender by rendering its SVG at the source resolution and computing DSSIM against the original — same metric, same renderer, no favorites. Baselines are per-image best-of: VTracer gets both its flat and photo presets, imagetracerjs gets default and high-quality settings, and the better result counts. Table lands in `out/benchmark.md`.
+
+Latest run (13 test images, mean DSSIM, lower is better): agentic-svg high **0.0094** vs 0.0178 for best-of-VTracer and 0.0163 for best-of-imagetracerjs — roughly 45% closer to the original than either, with the best median and no catastrophic worst case (our worst image scores 0.017; theirs go 3x worse on gradients and shaded spheres). Honest losses: imagetracerjs edges us by small margins on several flat-art images, wins outright on fine map-line detail, and our splat outputs cost more bytes than either baseline — smooth shading isn't free. Full table with per-image numbers and the losses spelled out: `out/benchmark.md` after a run.
 
 ## Running it
 

@@ -195,6 +195,34 @@ rejected candidates in a row).
   (DSSIM), throw away the whole refinement layer and ship the clean base.
   Converged is never worse than the base.
 
+### Gaussian-splat shading (the smooth-shading representation)
+
+SVG has no gradient meshes, so continuous 2D shading is unrepresentable with
+flat fills — quantize-and-trace turns a shaded sphere into concentric rings no
+matter how many layers you spend. The way out: an anisotropic 2D Gaussian is
+exactly an `<ellipse>` filled with a radial gradient whose stops sample the
+Gaussian falloff. `splat.js` fits them greedily:
+
+- A splat has center, two scales, rotation, peak opacity and a color. Its
+  per-pixel alpha is `A·exp(-d²/2)` (Mahalanobis d), cut at 2.5σ.
+- The optimal color over the current canvas has a closed form
+  (`c = Σ a(t − cur(1−a)) / Σ a²` per channel), and the error delta is computed
+  over just the footprint — so the greedy add-one, hill-climb-it loop from the
+  primitive refiner carries over unchanged.
+- The internal alpha profile is *defined as* the piecewise-linear interpolation
+  of the emitted gradient stops, so the optimizer scores exactly what resvg and
+  browsers render (verified < 0.011 RMSE on random splat stacks).
+- Placement is confined to smooth regions by weighting the error map with an
+  inverse-local-variance mask; texture and edges stay with the primitive
+  refiner. Gradient defs are deduped by quantized (color, opacity), so a few
+  hundred splats share a few dozen defs.
+
+Because a coarse base helps splats (a fine trace averages shading correctly and
+leaves zero-mean residual no smooth splat can improve), shading-heavy images
+get **two complete runs** — the normal flat-fill pipeline and a
+coarse-skeleton+splats pipeline — and whichever *finished* render scores closer
+wins. Base-stage scores mispredict the final, so the pick happens at the end.
+
 ## 4. Output and finalize
 
 `Model.toSVG` emits:
