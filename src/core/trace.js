@@ -34,6 +34,23 @@ export const TRACE_PRESETS = {
     spliceThreshold: 45,
     pathPrecision: 2,
   },
+  // Document scans: thousands of small ink strokes on one paper tone. Wide
+  // layer steps collapse the paper mottle (JPEG noise, parchment) into a few
+  // layers instead of faithfully tracing it into megabytes; low speckle keeps
+  // the ink.
+  document: {
+    colorMode: ColorMode.Color,
+    hierarchical: Hierarchical.Stacked,
+    mode: PathSimplifyMode.Spline,
+    filterSpeckle: 2,
+    colorPrecision: 6,
+    layerDifference: 28,
+    cornerThreshold: 40,
+    lengthThreshold: 4,
+    maxIterations: 10,
+    spliceThreshold: 45,
+    pathPrecision: 1,
+  },
   // Coarse base for splat-shaded photos: few wide color layers give a stable
   // skeleton whose smooth-shading error is one-sided, so Gaussian splats can
   // own the shading. A fine poster trace averages shading correctly (zero-mean
