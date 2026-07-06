@@ -5,7 +5,7 @@ import { analyze, planConversion } from './classify.js';
 import { converge } from './converge.js';
 import { TRACE_PRESETS } from './trace.js';
 import { SIZE_BUDGETS } from './sizegov.js';
-import { runConvergePair, runConvergeOne } from './dualrun.js';
+import { runConvergeMany, runConvergeOne } from './dualrun.js';
 import { matchTone } from './tonematch.js';
 import { detectTextRegions, buildTextPatches } from './textregions.js';
 import { loadImage } from './image.js';
@@ -43,45 +43,101 @@ export async function convertImage(input, opts = {}) {
     targetDssim: plan.targetDssim,
     plateauRelGain: plan.plateauRelGain,
     refineOpts: plan.refineOpts,
+    pathfitOpts: plan.pathfitOpts,
     tracePreset,
     weightMap,
     saliency: weightMap ? false : plan.saliency,
   };
 
-  // Shading-heavy images get two full runs — flat-fill pipeline vs Gaussian
-  // splat pipeline — and we keep the better final render. Base-stage scores
-  // mispredict the final (refinement compensates differently on each base),
-  // so the only honest gate is the finished result. On a near-tie the splat
-  // run wins: continuous shading beats equal-scoring flat fills. The two runs
-  // are independent and CPU-bound, so they execute in parallel worker threads
-  // (~33% wall-clock saved); live previews stream from the flat run only so
-  // the UI doesn't flicker between two different pipelines.
-  const progressA = onProgress
-    ? (p) => { if (p.run === 'B' && p.phase === 'refine') { const { svg, ...rest } = p; onProgress(rest); } else onProgress(p); }
-    : null;
+  // Candidate set: some image classes are best served by 2-3 COMPLETE runs
+  // (different presets / the Gaussian-splat pipeline), executed in parallel
+  // worker threads, keeping the best finished render. Base-stage scores
+  // mispredict finals (refinement compensates differently per base), so the
+  // only honest gate is the finished result. `bias` weights the comparison:
+  // the splat run wins near-ties (continuous shading beats equal-scoring flat
+  // fills, bias 1/1.07); alternate presets must win by >=3% (bias 1/0.97) so
+  // fatter traces don't take noise-level wins. Candidate 0 is always the
+  // primary route — live previews stream from it only, so the UI doesn't
+  // flicker between different pipelines.
+  const candidates = [{ name: plan.tracePresetName, opts: { ...common, useSplats: plan.useSplats, splatBudget: plan.splatBudget }, bias: 1 }];
+  const richTier = quality === 'high' || quality === 'max';
+  const smoothShare = analysis.smoothShare || 0;
+  // Near-pure gradients (smoothShare >= 0.8) are owned by the whole-image
+  // gradient base; a forced splat run there is slow wasted work.
   const splatEligible = plan.useSplats
-    || (analysis.type === 'illustration' && (analysis.smoothShare || 0) >= 0.3);
-  let result;
+    || (analysis.type === 'illustration' && smoothShare >= 0.3 && smoothShare < 0.8);
   if (splatEligible) {
-    const [flat, splat] = await runConvergePair(
-      input,
-      { ...common, useSplats: false },
-      {
+    candidates[0].opts.useSplats = false;
+    candidates.push({
+      name: 'splats',
+      opts: {
         ...common,
         useSplats: true,
         splatForce: true,
         splatBudget: plan.splatBudget || Math.min(400, Math.round(plan.budget * 1.2)),
       },
-      progressA,
-    );
-    result = splat.metrics.finalDssim < flat.metrics.finalDssim * 1.07 ? splat : flat;
-  } else {
-    result = await runConvergeOne(
-      input,
-      { ...common, useSplats: plan.useSplats, splatBudget: plan.splatBudget },
-      onProgress,
-    );
+      bias: 1 / 1.07,
+    });
   }
+  if (richTier) {
+    // Alternates run only at high/max: they buy the last few points of
+    // fidelity at real wall-clock cost, which is exactly what those tiers are
+    // for. Splat-eligible images skip the preset alternate entirely — measured
+    // across the suite it never beat both the flat and splat runs.
+    if ((analysis.type === 'flat' || analysis.type === 'illustration')
+      && !splatEligible
+      && (analysis.smoothShare || 0) < 0.5 // gradient-dominant images gain nothing from a fine trace, it just crawls
+      && (plan.tracePresetName === 'flat' || plan.tracePresetName === 'fine')) {
+      // The other of flat/fine: fine keeps AA gradation and thin strokes the
+      // flat preset filters away (and vice versa saves bytes when fine loses).
+      const other = plan.tracePresetName === 'fine' ? 'flat' : 'fine';
+      candidates.push({ name: other, opts: { ...common, useSplats: false, tracePreset: TRACE_PRESETS[other] }, bias: 1 / 0.97 });
+    }
+    if (analysis.type === 'text' && !plan.isDocument) {
+      // The 2x-enlarged trace wins on small glyphs but can lose on screenshots
+      // with plenty of non-text chrome; a native-resolution run competes.
+      candidates.push({ name: 'text-native', opts: { ...common, traceEnlarge: false }, bias: 1 / 0.97 });
+    }
+  }
+
+  const progressFiltered = onProgress
+    ? (p) => { if (p.run !== 'A' && p.phase === 'refine') { const { svg, ...rest } = p; onProgress(rest); } else onProgress(p); }
+    : null;
+  let result;
+  if (candidates.length === 1) {
+    result = await runConvergeOne(input, candidates[0].opts, onProgress);
+    result.metrics.pickedCandidate = candidates[0].name;
+  } else {
+    const results = await runConvergeMany(input, candidates.map((c) => c.opts), progressFiltered);
+    // Pick on a shared higher-resolution re-render, not each run's work-res
+    // score: work-res comparisons across different trace resolutions mispick
+    // (an enlarged-trace run and a native-trace run measure different things).
+    const pickRef = await loadImage(input, { maxSize: 768 });
+    const scores = results.map((r) => {
+      try {
+        const rr = renderSvgToRgba(r.svg, pickRef.width, pickRef.height);
+        return dssim(pickRef.data, rr.data, pickRef.width, pickRef.height);
+      } catch {
+        return r.metrics.finalDssim; // unrenderable candidate: fall back
+      }
+    });
+    let best = 0;
+    for (let i = 1; i < results.length; i++) {
+      if (scores[i] * candidates[i].bias < scores[best] * candidates[best].bias) best = i;
+    }
+    // Near-tie byte tiebreak: a candidate that scores within the preference
+    // margin AND is at least 3x smaller takes the win — a heavy splat/fine run
+    // has to beat the margin to justify a 10x file, but modest byte savings
+    // never override the smoothness preference.
+    for (let i = 0; i < results.length; i++) {
+      if (i === best) continue;
+      if (scores[i] <= scores[best] * 1.07
+        && Buffer.byteLength(results[i].svg) * 3 <= Buffer.byteLength(results[best].svg)) best = i;
+    }
+    result = results[best];
+    result.metrics.pickedCandidate = candidates[best].name;
+  }
+  plan.candidates = candidates.map((c) => c.name);
 
   // Text patches: photos/illustrations with sign/caption text get each text
   // region re-traced from the full-res original (text preset, 2x) and

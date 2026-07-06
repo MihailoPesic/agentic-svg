@@ -163,37 +163,40 @@ export async function runConvergeOne(input, opts, onProgress, tag = 'A') {
 }
 
 /**
- * Run two independent converge() passes concurrently in worker threads.
+ * Run N independent converge() passes concurrently in worker threads.
  *
- * @param {string|Buffer} input       image path or bytes (shared by both runs)
- * @param {object} optsA              converge options for run A
- * @param {object} optsB              converge options for run B
- * @param {(info)=>void} [onProgress] receives events from BOTH runs, each
- *                                    tagged `run: 'A' | 'B'`
- * @returns {Promise<[resA, resB]>}   each { svg, metrics, history }
+ * @param {string|Buffer} input       image path or bytes (shared by all runs)
+ * @param {object[]} optsList         one converge options object per run
+ * @param {(info)=>void} [onProgress] receives events from ALL runs, each
+ *                                    tagged `run: 'A' | 'B' | 'C' | ...`
+ * @param {string[]} [tags]           run tags; defaults to 'A','B','C',...
+ * @returns {Promise<Array<{svg:string, metrics:object, history:Array}>>}
  */
-export async function runConvergePair(input, optsA, optsB, onProgress) {
-  let a = null;
-  let b = null;
+export async function runConvergeMany(input, optsList, onProgress, tags) {
+  const runTags = tags || optsList.map((_, i) => String.fromCharCode(65 + i));
+  const spawned = [];
   try {
-    a = spawnConverge(input, optsA, onProgress, 'A');
-    b = spawnConverge(input, optsB, onProgress, 'B');
+    for (let i = 0; i < optsList.length; i++) {
+      spawned.push(spawnConverge(input, optsList[i], onProgress, runTags[i]));
+    }
   } catch {
-    // Could not create worker threads at all — serial inline fallback.
-    await terminateQuietly(a);
-    await terminateQuietly(b);
-    const resA = await runInline(input, optsA, onProgress, 'A');
-    const resB = await runInline(input, optsB, onProgress, 'B');
-    return [resA, resB];
+    // Could not create worker threads at all — serial inline fallback,
+    // all-or-nothing (same rule the pair always had).
+    await Promise.allSettled(spawned.map(terminateQuietly));
+    const out = [];
+    for (let i = 0; i < optsList.length; i++) {
+      out.push(await runInline(input, optsList[i], onProgress, runTags[i]));
+    }
+    return out;
   }
 
-  const settled = await Promise.allSettled([a.result, b.result]);
-  if (settled[0].status === 'fulfilled' && settled[1].status === 'fulfilled') {
-    return [settled[0].value, settled[1].value];
+  const settled = await Promise.allSettled(spawned.map((s) => s.result));
+  if (settled.every((s) => s.status === 'fulfilled')) {
+    return settled.map((s) => s.value);
   }
 
-  // Something failed: make sure neither thread keeps burning CPU.
-  await Promise.allSettled([terminateQuietly(a), terminateQuietly(b)]);
+  // Something failed: make sure no thread keeps burning CPU.
+  await Promise.allSettled(spawned.map(terminateQuietly));
 
   const reasons = settled.filter((s) => s.status === 'rejected').map((s) => s.reason);
   const realError = reasons.find((r) => !(r && r.workerInfra));
@@ -201,11 +204,20 @@ export async function runConvergePair(input, optsA, optsB, onProgress) {
 
   // Infra-only failure: redo the missing run(s) inline, keep what succeeded.
   const out = [];
-  out[0] = settled[0].status === 'fulfilled'
-    ? settled[0].value
-    : await runInline(input, optsA, onProgress, 'A');
-  out[1] = settled[1].status === 'fulfilled'
-    ? settled[1].value
-    : await runInline(input, optsB, onProgress, 'B');
+  for (let i = 0; i < optsList.length; i++) {
+    out.push(settled[i].status === 'fulfilled'
+      ? settled[i].value
+      : await runInline(input, optsList[i], onProgress, runTags[i]));
+  }
   return out;
+}
+
+/**
+ * Run two independent converge() passes concurrently in worker threads.
+ * Kept as a thin wrapper over runConvergeMany for existing callers.
+ *
+ * @returns {Promise<[resA, resB]>}   each { svg, metrics, history }
+ */
+export async function runConvergePair(input, optsA, optsB, onProgress) {
+  return runConvergeMany(input, [optsA, optsB], onProgress);
 }

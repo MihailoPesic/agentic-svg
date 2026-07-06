@@ -156,3 +156,46 @@ test('Model.toSVG emits valid-looking SVG with viewBox', () => {
   assert.match(svg, /width="48"/);
   assert.match(svg, /<\/svg>/);
 });
+
+test('runConvergeMany returns N tagged results', async () => {
+  const { runConvergeMany } = await import('../src/core/dualrun.js');
+  const opts = {
+    workRes: 96, budget: 4, tryGradient: false, tryRegionGradient: false,
+    tryGradientOverlay: false, useSplats: false,
+  };
+  const tags = new Set();
+  const results = await runConvergeMany(
+    'fixtures/logo.png',
+    [opts, opts, opts],
+    (p) => { if (p.run) tags.add(p.run); },
+  );
+  assert.equal(results.length, 3);
+  for (const r of results) {
+    assert.ok(r.svg && r.svg.startsWith('<svg'), 'svg non-empty');
+    assert.ok(Number.isFinite(r.metrics.finalDssim), 'finalDssim finite');
+  }
+  assert.ok(tags.has('A') && tags.has('B') && tags.has('C'), `tags seen: ${[...tags]}`);
+});
+
+test('probeText reports thin-stroke coverage for line art', async () => {
+  const sharp = (await import('sharp')).default;
+  const { analyze } = await import('../src/core/classify.js');
+  // thin dark grid on white: thin runs everywhere there is ink
+  let lines = '';
+  for (let i = 1; i < 10; i++) {
+    lines += `<line x1="${i * 40}" y1="0" x2="${i * 40}" y2="400" stroke="#333" stroke-width="2"/>`;
+    lines += `<line x1="0" y1="${i * 40}" x2="400" y2="${i * 40}" stroke="#333" stroke-width="2"/>`;
+  }
+  const grid = await sharp(Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400"><rect width="400" height="400" fill="#fff"/>${lines}</svg>`,
+  )).png().toBuffer();
+  const a = await analyze(grid);
+  assert.ok(a.thinInkFrac > 0.8, `grid thinInkFrac ${a.thinInkFrac}`);
+  assert.ok(a.thinShare > 0.01, `grid thinShare ${a.thinShare}`);
+  // one solid blob: ink exists but nothing is thin
+  const blob = await sharp(Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400"><rect width="400" height="400" fill="#fff"/><circle cx="200" cy="200" r="120" fill="#333"/></svg>',
+  )).png().toBuffer();
+  const b = await analyze(blob);
+  assert.ok(b.thinInkFrac < 0.1, `blob thinInkFrac ${b.thinInkFrac}`);
+});
