@@ -5,6 +5,8 @@ import { analyze, planConversion } from './classify.js';
 import { converge } from './converge.js';
 import { TRACE_PRESETS } from './trace.js';
 import { SIZE_BUDGETS } from './sizegov.js';
+import { runConvergePair, runConvergeOne } from './dualrun.js';
+import { matchTone } from './tonematch.js';
 import { detectTextRegions, buildTextPatches } from './textregions.js';
 import { loadImage } from './image.js';
 import { renderSvgToRgba } from './render.js';
@@ -44,28 +46,41 @@ export async function convertImage(input, opts = {}) {
     tracePreset,
     weightMap,
     saliency: weightMap ? false : plan.saliency,
-    onProgress,
   };
 
   // Shading-heavy images get two full runs — flat-fill pipeline vs Gaussian
   // splat pipeline — and we keep the better final render. Base-stage scores
   // mispredict the final (refinement compensates differently on each base),
   // so the only honest gate is the finished result. On a near-tie the splat
-  // run wins: continuous shading beats equal-scoring flat fills.
+  // run wins: continuous shading beats equal-scoring flat fills. The two runs
+  // are independent and CPU-bound, so they execute in parallel worker threads
+  // (~33% wall-clock saved); live previews stream from the flat run only so
+  // the UI doesn't flicker between two different pipelines.
+  const progressA = onProgress
+    ? (p) => { if (p.run === 'B' && p.phase === 'refine') { const { svg, ...rest } = p; onProgress(rest); } else onProgress(p); }
+    : null;
   const splatEligible = plan.useSplats
     || (analysis.type === 'illustration' && (analysis.smoothShare || 0) >= 0.3);
   let result;
   if (splatEligible) {
-    const flat = await converge(input, { ...common, useSplats: false });
-    const splat = await converge(input, {
-      ...common,
-      useSplats: true,
-      splatForce: true,
-      splatBudget: plan.splatBudget || Math.min(400, Math.round(plan.budget * 1.2)),
-    });
+    const [flat, splat] = await runConvergePair(
+      input,
+      { ...common, useSplats: false },
+      {
+        ...common,
+        useSplats: true,
+        splatForce: true,
+        splatBudget: plan.splatBudget || Math.min(400, Math.round(plan.budget * 1.2)),
+      },
+      progressA,
+    );
     result = splat.metrics.finalDssim < flat.metrics.finalDssim * 1.07 ? splat : flat;
   } else {
-    result = await converge(input, { ...common, useSplats: plan.useSplats, splatBudget: plan.splatBudget });
+    result = await runConvergeOne(
+      input,
+      { ...common, useSplats: plan.useSplats, splatBudget: plan.splatBudget },
+      onProgress,
+    );
   }
 
   // Text patches: photos/illustrations with sign/caption text get each text
@@ -116,6 +131,20 @@ export async function convertImage(input, opts = {}) {
       }
     } catch {
       // patching must never break a conversion
+    }
+  }
+
+  // Tone match: soft translucent refinement layers can wash global contrast
+  // out (haze). Fit a tightly-clamped per-channel linear map render->source
+  // and bake it into the emitted colors; gated inside matchTone — applied only
+  // when the corrected render scores closer.
+  if (analysis.type === 'photo' || analysis.type === 'illustration') {
+    try {
+      const toneRef = await loadImage(input, { maxSize: 768 });
+      const tm = matchTone(svgOut, toneRef);
+      if (tm.applied) svgOut = tm.svg;
+    } catch {
+      // tone matching must never break a conversion
     }
   }
 
