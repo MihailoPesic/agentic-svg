@@ -54,7 +54,7 @@ A few things worth calling out:
 
 `node scripts/benchmark.js` scores every contender by rendering its SVG at the source resolution and computing DSSIM against the original — same metric, same renderer, no favorites. Baselines are per-image best-of: VTracer gets both its flat and photo presets, imagetracerjs gets default and high-quality settings, and the better result counts. Table lands in `out/benchmark.md`.
 
-Latest run (13 test images, mean DSSIM, lower is better): agentic-svg high **0.0094** vs 0.0178 for best-of-VTracer and 0.0163 for best-of-imagetracerjs — roughly 45% closer to the original than either, with the best median and no catastrophic worst case (our worst image scores 0.017; theirs go 3x worse on gradients and shaded spheres). Honest losses: imagetracerjs edges us by small margins on several flat-art images, wins outright on fine map-line detail, and our splat outputs cost more bytes than either baseline — smooth shading isn't free. Full table with per-image numbers and the losses spelled out: `out/benchmark.md` after a run.
+Latest run (13 test images, mean DSSIM, lower is better): agentic-svg high **0.0092** vs 0.0178 for best-of-VTracer and 0.0163 for best-of-imagetracerjs — roughly 45% closer to the original than either, with the best median and no catastrophic worst case (our worst image scores 0.017; theirs go 3x worse on gradients and shaded spheres). Honest losses: imagetracerjs edges us by small margins on several flat-art images, wins outright on fine map-line detail, and our splat outputs cost more bytes than either baseline — smooth shading isn't free. Full table with per-image numbers and the losses spelled out: `out/benchmark.md` after a run.
 
 ## Running it
 
