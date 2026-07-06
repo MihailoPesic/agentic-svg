@@ -94,7 +94,11 @@ export async function converge(input, opts = {}) {
     // circles/ellipses to true primitives and straighten near-collinear runs.
     // Rounder shapes, straighter edges, and much smaller paths — done before
     // the seed render so scoring sees the fitted geometry.
-    let traceSvg = fitPrimitives(await traceRaw(traceImg, tracePreset));
+    // Per-class snap/merge tolerances: `false` skips geometric fitting, an
+    // object overrides pathfit defaults (photos need tighter tolerances or the
+    // 1-2px anti-alias slivers get visibly distorted).
+    const pf = (svg) => (opts.pathfitOpts === false ? svg : fitPrimitives(svg, opts.pathfitOpts || {}));
+    let traceSvg = pf(await traceRaw(traceImg, tracePreset));
 
     // Size governor: photographic content can trace to megabytes. When over
     // the byte budget, walk coarser preset rungs and reduced trace resolutions
@@ -115,7 +119,7 @@ export async function converge(input, opts = {}) {
       if (pick < 0) pick = cands.length - 1;
       const attempt = async (c) => {
         const img = c.res === 1 ? traceImg : await loadImage(input, { maxSize: Math.round(baseSide * c.res) });
-        const svg = fitPrimitives(await traceRaw(img, ladder[Math.min(c.rung, ladder.length - 1)]));
+        const svg = pf(await traceRaw(img, ladder[Math.min(c.rung, ladder.length - 1)]));
         return { img, svg, bytes: estimateBytes(svg).estimatedFinal };
       };
       let att = await attempt(cands[pick]);
@@ -210,7 +214,7 @@ export async function converge(input, opts = {}) {
     if (opts.useSplats) {
       // Coarse trace at full trace resolution: it supplies the color slabs and
       // the crisp region edges (mountains, silhouettes) under the splats.
-      const shadingSvg = fitPrimitives(await traceRaw(traceImg, TRACE_PRESETS.shading));
+      const shadingSvg = pf(await traceRaw(traceImg, TRACE_PRESETS.shading));
       const shadingSeed = renderSvgToRgba(shadingSvg, W, H);
       // Confine splats to smooth regions: weight their error map by inverse
       // local luma variation. Texture and noise stay with the primitive
@@ -309,8 +313,11 @@ export async function converge(input, opts = {}) {
   }
   // When the base already matches the image closely (clean flat art / a good
   // gradient fit), refinement only stamps polygon dents over crisp edges while
-  // shaving imperceptible RMSE. Skip it — cleaner output, smaller file.
-  if (traceMetrics && traceMetrics.dssim < 0.013) effBudget = 0;
+  // shaving imperceptible RMSE. Skip it — cleaner output, smaller file. The
+  // threshold scales with the quality target: at high/max a "clean-ish" base
+  // (a UI screenshot's icons and chrome) still deserves refinement.
+  const cleanSkip = Math.min(0.013, 2 * (targetDssim ?? 0.0065));
+  if (traceMetrics && traceMetrics.dssim < cleanSkip) effBudget = 0;
 
   const startScore = model.score;
   let added = 0;
