@@ -93,19 +93,27 @@ npm test
 | `src/core/render.js` | SVG to RGBA via resvg |
 | `src/core/trace.js` | VTracer presets |
 | `src/core/gradient.js` | fit and emit linear/radial gradients |
+| `src/core/regiongradient.js` | per-region gradient fitting |
+| `src/core/gradoverlay.js` | gradient overlays on smooth blobs |
+| `src/core/splat.js` | Gaussian splat fitting (smooth shading as SVG) |
+| `src/core/pathfit.js` | snap traced polylines to true circles/ellipses |
+| `src/core/textregions.js` | detect text regions, re-trace and patch them |
+| `src/core/tonematch.js` | correct global contrast drift in emitted colors |
+| `src/core/sizegov.js` | byte budgets and the coarseness ladder |
 | `src/core/saliency.js` | importance map (region distinctiveness + center bias) |
 | `src/core/optimizer.js` | the model: seed, hill-climb, error-targeted refinement |
 | `src/core/converge.js` | the loop |
-| `src/core/classify.js` | router + quality presets |
-| `src/core/pipeline.js` | `convertImage()` plus svgo cleanup |
+| `src/core/dualrun.js` | flat vs splat passes in parallel worker threads |
+| `src/core/classify.js` | router (with a 512px text probe) + quality presets |
+| `src/core/pipeline.js` | `convertImage()`: dual-run, text patches, tone match, svgo |
 | `src/server/server.js` | static host + streaming convert API |
 | `web/` | front end |
 
 ## Limits
 
-- Photos with a lot of high-frequency noise produce large SVGs — vectorizing noise is inherently expensive.
-- Very small text below roughly 9px in the source can still smear; there's a limit to what curve fitting can recover.
-- The server runs one conversion at a time. A worker pool is the obvious next step (the module is in `src/core/pool.js`).
+- Photographic content costs bytes: smooth shading and texture are inherently expensive to vectorize. A byte governor caps the pathological cases per quality tier (`max` is uncapped), and capped photos pay a measured fidelity premium for it.
+- Very small text below roughly 9px in the source can still smear; there's a limit to what curve fitting can recover. Text regions inside photos are detected and re-traced at high resolution, but lit signs with strong glow remain hit-and-miss.
+- Photo conversions at high quality take tens of seconds — two full pipelines run (in parallel threads) plus text patching and tone matching, and that compute is the price of the fidelity.
 
 ## License
 
