@@ -20,6 +20,7 @@ import { fitRegionGradients } from './regiongradient.js';
 import { fitGradientOverlay } from './gradoverlay.js';
 import { fitPrimitives } from './pathfit.js';
 import { fitSplats, emitSplatsDeduped } from './splat.js';
+import { chooseTraceLadder, estimateBytes } from './sizegov.js';
 
 /** Strip the outer <svg> wrapper, returning inner markup only. */
 export function innerSvg(svg) {
@@ -86,14 +87,45 @@ export async function converge(input, opts = {}) {
     // Trace at traceRes (>= workRes) so detail survives, then render that trace
     // down to the refine canvas. The base lives in trace space; the refine
     // group is scaled into it. For workRes==traceRes this is a no-op.
-    const traceImg = (traceRes > W || traceEnlarge)
+    let traceImg = (traceRes > W || traceEnlarge)
       ? await loadImage(input, { maxSize: traceRes || W, allowEnlarge: traceEnlarge })
       : work;
     // Post-trace geometric fitting: snap traced polylines that are really
     // circles/ellipses to true primitives and straighten near-collinear runs.
     // Rounder shapes, straighter edges, and much smaller paths — done before
     // the seed render so scoring sees the fitted geometry.
-    const traceSvg = fitPrimitives(await traceRaw(traceImg, tracePreset));
+    let traceSvg = fitPrimitives(await traceRaw(traceImg, tracePreset));
+
+    // Size governor: photographic content can trace to megabytes. When over
+    // the byte budget, walk coarser preset rungs and reduced trace resolutions
+    // in measured fidelity-per-byte order; a byte predictor (bytes halve per
+    // rung, scale ~res^2.2) skips straight to the likely landing candidate so
+    // we don't pay for every re-trace. 50KB headroom is reserved for the
+    // refinement layer.
+    const HEADROOM = 50 * 1024;
+    if (Number.isFinite(opts.maxBaseBytes) && estimateBytes(traceSvg).estimatedFinal + HEADROOM > opts.maxBaseBytes) {
+      const ladder = chooseTraceLadder(tracePreset);
+      const cands = [
+        { rung: 1, res: 1 }, { rung: 1, res: 0.7 }, { rung: 1, res: 0.57 },
+        { rung: 2, res: 0.7 }, { rung: 2, res: 0.57 }, { rung: 3, res: 0.57 },
+      ];
+      const baseSide = Math.max(traceImg.width, traceImg.height);
+      const over = (estimateBytes(traceSvg).estimatedFinal + HEADROOM) / opts.maxBaseBytes;
+      let pick = cands.findIndex((c) => (0.5 ** c.rung) * (c.res ** 2.2) <= 1 / over);
+      if (pick < 0) pick = cands.length - 1;
+      const attempt = async (c) => {
+        const img = c.res === 1 ? traceImg : await loadImage(input, { maxSize: Math.round(baseSide * c.res) });
+        const svg = fitPrimitives(await traceRaw(img, ladder[Math.min(c.rung, ladder.length - 1)]));
+        return { img, svg, bytes: estimateBytes(svg).estimatedFinal };
+      };
+      let att = await attempt(cands[pick]);
+      while (att.bytes + HEADROOM > opts.maxBaseBytes && pick < cands.length - 1) {
+        pick++;
+        att = await attempt(cands[pick]);
+      }
+      traceImg = att.img;
+      traceSvg = att.svg;
+    }
     const traceInner = innerSvg(traceSvg);
     const traceSeed = renderSvgToRgba(traceSvg, W, H);
     const traceRmse = rmse(work.data, traceSeed.data, W, H);
