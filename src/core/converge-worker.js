@@ -55,9 +55,25 @@ async function main() {
     runOpts.weightMap = null;
   }
 
+  // Live previews: refine events carry the live model only inside this worker
+  // (the whitelist strips it), so serialize a throttled SVG snapshot here —
+  // this is what lets the browser watch the picture build up.
+  let lastPreview = 0;
   runOpts.onProgress = (info) => {
     if (!info) return;
-    parentPort.postMessage({ type: 'progress', data: sanitizeProgress(info) });
+    const data = sanitizeProgress(info);
+    if (info.phase === 'refine' && info.model && info.i != null) {
+      const stride = Math.max(20, Math.floor((info.budget || 160) / 8));
+      if (info.i - lastPreview >= stride) {
+        try {
+          data.svg = info.model.toSVG();
+          lastPreview = info.i;
+        } catch {
+          // preview is best-effort
+        }
+      }
+    }
+    parentPort.postMessage({ type: 'progress', data });
   };
 
   const res = await converge(rehydrateInput(input), runOpts);

@@ -112,10 +112,17 @@ async function run() {
 
   const es = new EventSource('/api/progress/' + jobId);
 
+  es.addEventListener('queued', (e) => {
+    let pos = '';
+    try { pos = ' #' + JSON.parse(e.data).position; } catch (_) {}
+    setPhase(`waiting for a slot${pos}`);
+  });
+
   es.addEventListener('analysis', (e) => {
     const { analysis, plan } = JSON.parse(e.data);
     const sal = plan && plan.saliency ? ' · saliency on' : '';
-    setPhase(`${analysis.type} · ${analysis.colors} colors · edges ${analysis.edgeDensity}${sal} · tracing base`);
+    const slow = analysis.type === 'photo' ? ' · photographic image, takes longer' : '';
+    setPhase(`${analysis.type} · ${analysis.colors} colors · edges ${analysis.edgeDensity}${sal}${slow} · tracing base`);
     const im = $('origImg');
     $('origMeta').textContent = `${im.naturalWidth}×${im.naturalHeight} · ${analysis.type}`;
   });
@@ -178,11 +185,14 @@ function renderStats(res) {
   state.traceDssim = tD;
   const kb = (m.finalBytes / 1024).toFixed(1);
   const raw = (m.rawBytes / 1024).toFixed(1);
+  const method = m.pickedCandidate && m.pickedCandidate !== m.base ? `${m.base} (${m.pickedCandidate})` : (m.base || '—');
+  const patched = state.finalSvg && /textpatches/.test(state.finalSvg) ? ' +text patches' : '';
   const parts = [
     `type <b>${res.analysis.type}</b>`,
+    `method <b>${method}${patched}</b>`,
     `trace dssim <b>${tD != null ? tD.toFixed(4) : '—'}</b>`,
     `final dssim <b>${fD.toFixed(4)}</b>`,
-    `shapes <b>${m.shapesTotal}</b>`,
+    `elements <b>${m.elements ?? m.shapesTotal}</b>`,
     `size <b>${kb} kb</b> (raw ${raw})`,
   ];
   if (tD && fD < tD) parts.push(`<span class="good">${(tD / fD).toFixed(1)}× closer than trace</span>`);

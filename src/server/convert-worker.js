@@ -1,7 +1,8 @@
 // Worker entry for one conversion job. Runs convertImage off the server's
-// main thread and forwards progress as plain serializable messages —
-// no Model instance ever crosses the thread boundary; svg previews are
-// rendered to strings here, with the same throttling the server used to do.
+// main thread and forwards progress as plain serializable messages. Refine
+// previews arrive already serialized (the converge workers render throttled
+// SVG snapshots); events from non-primary candidate runs have their previews
+// stripped upstream, so what lands here is safe to forward as-is.
 
 import { parentPort, workerData } from 'node:worker_threads';
 import { convertImage } from '../core/pipeline.js';
@@ -9,7 +10,6 @@ import { convertImage } from '../core/pipeline.js';
 const { input, quality, saliency } = workerData;
 const post = (event, data) => parentPort.postMessage({ event, data });
 
-let lastPreview = 0;
 try {
   const result = await convertImage(Buffer.from(input.buffer, input.byteOffset, input.byteLength), {
     quality,
@@ -19,13 +19,10 @@ try {
       if (p.phase === 'analysis') {
         post('analysis', { analysis: p.analysis, plan: p.plan });
       } else if (p.phase === 'trace') {
-        post('trace', { svg: p.svg, rmse: p.rmse, dssim: p.dssim });
+        if (p.run === undefined || p.run === 'A') post('trace', { svg: p.svg, rmse: p.rmse, dssim: p.dssim });
       } else if (p.phase === 'refine') {
         const ev = { i: p.i, budget: p.budget, added: p.added, score: p.score };
-        // Cap previews to ~8 over the whole run regardless of budget — injecting
-        // a large SVG too often can stall the browser renderer.
-        const stride = Math.max(20, Math.floor(p.budget / 8));
-        if (p.i - lastPreview >= stride && p.model) { ev.svg = p.model.toSVG(); lastPreview = p.i; }
+        if (p.svg) ev.svg = p.svg;
         post('refine', ev);
       }
     },

@@ -41,4 +41,6 @@ writeFileSync(output, res.svg);
 console.log(`\n${input} → ${output}`);
 console.log(`  type=${res.analysis.type} colors=${res.analysis.colors} edges=${res.analysis.edgeDensity} quality=${args.quality}`);
 if (res.metrics.trace) console.log(`  trace-only dssim=${res.metrics.trace.dssim.toFixed(4)} → converged dssim=${res.metrics.finalDssim.toFixed(4)}`);
-console.log(`  shapes=${res.metrics.shapesTotal}  size=${(res.metrics.finalBytes / 1024).toFixed(1)}KB (raw ${(res.metrics.rawBytes / 1024).toFixed(1)}KB)  time=${dt}s`);
+const method = res.metrics.pickedCandidate && res.metrics.pickedCandidate !== res.metrics.base
+  ? `${res.metrics.base} via ${res.metrics.pickedCandidate}` : (res.metrics.base || '-');
+console.log(`  method=${method}  elements=${res.metrics.elements ?? res.metrics.shapesTotal}  size=${(res.metrics.finalBytes / 1024).toFixed(1)}KB (raw ${(res.metrics.rawBytes / 1024).toFixed(1)}KB)  time=${dt}s`);
