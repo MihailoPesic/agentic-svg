@@ -58,8 +58,8 @@ const fixtures = readdirSync(fixturesDir).filter((f) => f.endsWith('.png')).sort
 
 const pad = (s, w) => String(s).padEnd(w);
 console.log(pad('fixture', 14) + pad('old type', 14) + pad('new type', 14)
-  + pad('colors', 8) + pad('edge', 8) + pad('smooth', 8) + pad('smoothShare', 13) + pad('texture', 9) + 'changed');
-console.log('-'.repeat(96));
+  + pad('colors', 8) + pad('edge', 8) + pad('smooth', 8) + pad('smoothShare', 13) + pad('texture', 9) + pad('thinInk', 9) + 'changed');
+console.log('-'.repeat(105));
 
 for (const f of fixtures) {
   const path = join(fixturesDir, f);
@@ -75,6 +75,7 @@ for (const f of fixtures) {
     + pad(after.smoothness, 8)
     + pad(after.smoothShare ?? '-', 13)
     + pad(after.texture ?? '-', 9)
+    + pad(after.thinInkFrac ?? '-', 9)
     + changed,
   );
 }

@@ -19,6 +19,22 @@ export const TRACE_PRESETS = {
     spliceThreshold: 45,
     pathPrecision: 2,
   },
+  // Anti-aliased illustration / fine lines: keeps the AA gradation layers and
+  // thin strokes the flat preset filters away. Costs bytes; used as a gated
+  // candidate or when the thin-stroke signal fires.
+  fine: {
+    colorMode: ColorMode.Color,
+    hierarchical: Hierarchical.Stacked,
+    mode: PathSimplifyMode.Spline,
+    filterSpeckle: 3,
+    colorPrecision: 8,
+    layerDifference: 8,
+    cornerThreshold: 45,
+    lengthThreshold: 4,
+    maxIterations: 10,
+    spliceThreshold: 45,
+    pathPrecision: 2,
+  },
   // Screenshots / UI / line art: crisp edges and text. High color precision,
   // minimal speckle filtering, tighter corners so glyph edges survive.
   text: {

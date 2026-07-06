@@ -32,8 +32,50 @@ function probeText(img) {
   let inkPx = 0;
   for (let i = 0; i < n; i++) if (Math.abs(lum[i] - bgLuma) > 45) { ink[i] = 1; inkPx++; }
   const inkFrac = inkPx / n;
+
+  // Stroke-width proxy: per-pixel horizontal and vertical ink run lengths
+  // (each run's length assigned to every pixel in it, two linear passes).
+  // Thin ink = min(hRun, vRun) <= 3 at the 512px probe — map grid lines and
+  // hairline borders count, solid shapes don't. These details are invisible to
+  // the 128px signals, so this is the only place to catch them. thinShare is
+  // relative to the IMAGE (thin coverage), not to total ink — big solid
+  // regions (continents on an ocean) would otherwise drown the lines out.
+  let thinInkFrac = 0;
+  let thinShare = 0;
+  if (inkPx > 0) {
+    const hRun = new Uint16Array(n);
+    for (let y = 0; y < H; y++) {
+      let x = 0;
+      const row = y * W;
+      while (x < W) {
+        if (!ink[row + x]) { x++; continue; }
+        let x2 = x;
+        while (x2 < W && ink[row + x2]) x2++;
+        const len = Math.min(65535, x2 - x);
+        for (let k = x; k < x2; k++) hRun[row + k] = len;
+        x = x2;
+      }
+    }
+    let thinPx = 0;
+    for (let x = 0; x < W; x++) {
+      let y = 0;
+      while (y < H) {
+        if (!ink[y * W + x]) { y++; continue; }
+        let y2 = y;
+        while (y2 < H && ink[y2 * W + x]) y2++;
+        const len = y2 - y;
+        for (let k = y; k < y2; k++) {
+          if (Math.min(hRun[k * W + x], len) <= 3) thinPx++;
+        }
+        y = y2;
+      }
+    }
+    thinInkFrac = thinPx / inkPx;
+    thinShare = thinPx / n;
+  }
+
   if (bgFrac < 0.4 || inkFrac < 0.01 || inkFrac > 0.45) {
-    return { textish: false, bgFrac: +bgFrac.toFixed(3), inkFrac: +inkFrac.toFixed(3), glyphComps: 0 };
+    return { textish: false, bgFrac: +bgFrac.toFixed(3), inkFrac: +inkFrac.toFixed(3), glyphComps: 0, thinInkFrac: +thinInkFrac.toFixed(3), thinShare: +thinShare.toFixed(4) };
   }
 
   // Connected components of ink (4-neighbour flood via a stack); count the
@@ -64,7 +106,7 @@ function probeText(img) {
     if (area >= 3 && area <= 2200 && w <= maxSide && h <= maxSide) glyphComps++;
   }
   const textish = glyphComps >= 45;
-  return { textish, bgFrac: +bgFrac.toFixed(3), inkFrac: +inkFrac.toFixed(3), glyphComps };
+  return { textish, bgFrac: +bgFrac.toFixed(3), inkFrac: +inkFrac.toFixed(3), glyphComps, thinInkFrac: +thinInkFrac.toFixed(3), thinShare: +thinShare.toFixed(4) };
 }
 
 /**
@@ -139,6 +181,8 @@ export async function analyze(input) {
     bgFrac: probe.bgFrac,
     inkFrac: probe.inkFrac,
     glyphComps: probe.glyphComps,
+    thinInkFrac: probe.thinInkFrac || 0,
+    thinShare: probe.thinShare || 0,
   };
 }
 
@@ -165,9 +209,15 @@ export function planConversion(analysis, quality = 'balanced', overrides = {}) {
     // tone plus ink. The regular text preset traces every mottle of a noisy
     // scan into megabytes; the document preset collapses the paper instead.
     const isDocument = (analysis.glyphComps || 0) > 800;
+    // UI screenshots carry non-text chrome (icons, images) that the tiny text
+    // budget can't refine; unlock some budget at high/max. Documents keep the
+    // tight cap — extra shapes only smear ink.
+    const textBudget = isDocument ? 50 : quality === 'max' ? 200 : quality === 'high' ? 120 : 50;
+    const textPlateau = isDocument || (quality !== 'high' && quality !== 'max') ? 0.02 : 0.012;
     return {
       strategy: 'trace-refine',
       tracePresetName: isDocument ? 'document' : 'text',
+      isDocument,
       shape: 'rect',
       alpha: 0.9,
       saliency: false,
@@ -175,8 +225,8 @@ export function planConversion(analysis, quality = 'balanced', overrides = {}) {
       // Upsample to ~2x before tracing so glyph edges resolve into clean curves.
       traceRes: isDocument ? Math.min(q.traceRes, 1200) : Math.max(q.traceRes, 1300),
       traceEnlarge: true,
-      budget: Math.min(q.budget, 50),
-      plateauRelGain: Math.max(q.plateauRelGain, 0.02),
+      budget: Math.min(q.budget, textBudget),
+      plateauRelGain: Math.max(q.plateauRelGain, textPlateau),
       ...overrides,
     };
   }
@@ -193,6 +243,10 @@ export function planConversion(analysis, quality = 'balanced', overrides = {}) {
       saliency: true,
       useSplats: true,
       splatBudget: Math.min(400, Math.round(q.budget * 1.2)),
+      // Poster traces of photos are mostly 1-2px anti-alias slivers; ANY
+      // snap/merge tolerance is a large relative distortion there (measured:
+      // fitting costs mascot 0.0021 -> 0.0033 dssim at identical bytes).
+      pathfitOpts: false,
       ...q,
       budget: Math.round(q.budget * 1.4),
       refineOpts: { maxAreaFrac: 0.04, block: 12, topK: 12, expand: 1.3 },
@@ -200,7 +254,11 @@ export function planConversion(analysis, quality = 'balanced', overrides = {}) {
     };
   }
 
-  // trace-refine is the robust default; very busy photos benefit from finer trace.
+  // Fine lines (map grids, hairline borders) get erased by the flat preset's
+  // speckle/layer settings, but no cheap signal separates them reliably —
+  // faint lines hide below any ink-contrast threshold and photo texture fires
+  // false positives. The fine preset competes as a full candidate run instead
+  // (see the pipeline's candidate set) and wins empirically where it matters.
   const tracePresetName = 'flat';
   // Photos/illustrations want softer correction alpha; flat art wants opaque.
   const alpha = analysis.type === 'flat' ? 0.92 : 0.8;
@@ -214,6 +272,7 @@ export function planConversion(analysis, quality = 'balanced', overrides = {}) {
     shape,
     alpha,
     saliency,
+    pathfitOpts: { circleTol: 0.008, residualFloor: 0.3, lineTol: 0.35 },
     ...q,
     ...overrides,
   };
