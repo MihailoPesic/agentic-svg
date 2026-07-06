@@ -1,5 +1,6 @@
 node_modules/
 out/
+testdata/
 *.log
 .DS_Store
 scratch_*
