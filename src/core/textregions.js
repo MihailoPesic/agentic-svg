@@ -22,9 +22,20 @@ const fmt = (n) => {
 /**
  * Detect probable text regions in an RGBA image.
  *
+ * Runs a STRICT pass, then (unless opts.relaxed === false) a RELAXED second
+ * pass tuned for LED/billboard signs: glowing gradient panels get a ~2.75x
+ * looser background-flatness cap, and saturated colored letters on a bright
+ * background count as ink even without extreme per-channel contrast. The
+ * relaxed pass keeps the row-structure test STRICT (that is what separates
+ * letter rows from crowds) but only needs 5 glyphs per cluster. Results are
+ * merged with strict boxes winning any overlap; each region is tagged
+ * `relaxed:true|false` so callers can log its provenance. False positives are
+ * acceptable here because the pipeline render-gates every patch.
+ *
  * @param {{width:number,height:number,data:Uint8ClampedArray}} img
  *        typically a ~768px-wide load; returned boxes are in ITS coordinates.
  * @param {object} [opts]
+ * @param {boolean} [opts.relaxed=true]  run the permissive LED/billboard pass
  * @param {number} [opts.tile=32]        local-background tile size in px
  * @param {number} [opts.inkThresh=45]   max per-channel |rgb - localBg| for a
  *                                       pixel to count as ink
@@ -35,11 +46,35 @@ const fmt = (n) => {
  *                                       background pixels — a real background
  *                                       is flat once glyph halos are excluded
  * @param {number} [opts.minGlyphs=6]    glyph components per cluster to keep it
- * @param {number} [opts.maxRegions=10]  cap (sorted by glyph count)
+ * @param {number} [opts.maxRegions=10]  cap (strict first, then glyph count)
  * @param {number} [opts.pad=4]          padding around each final box
- * @returns {Array<{x:number,y:number,w:number,h:number,glyphs:number}>}
+ * @returns {Array<{x:number,y:number,w:number,h:number,glyphs:number,relaxed:boolean}>}
  */
 export function detectTextRegions(img, opts = {}) {
+  const { relaxed = true, maxRegions = 10 } = opts;
+  const strict = detectPass(img, opts).map((b) => ({ ...b, relaxed: false }));
+  if (!relaxed) return strict.slice(0, maxRegions);
+
+  const loose = detectPass(img, {
+    ...opts,
+    bgGradMax: (opts.bgGradMax ?? 8) * 2.75,
+    minGlyphs: 5,
+    _satInk: true,
+  });
+  const out = [...strict];
+  for (const b of loose) {
+    // Dedupe against the strict pass: any overlap and the strict box wins.
+    const hit = strict.some((s) =>
+      b.x <= s.x + s.w - 1 && s.x <= b.x + b.w - 1 &&
+      b.y <= s.y + s.h - 1 && s.y <= b.y + b.h - 1);
+    if (!hit) out.push({ ...b, relaxed: true });
+  }
+  // Strict boxes outrank relaxed ones when the cap bites.
+  out.sort((a, b) => (a.relaxed === b.relaxed ? b.glyphs - a.glyphs : a.relaxed ? 1 : -1));
+  return out.slice(0, maxRegions);
+}
+
+function detectPass(img, opts = {}) {
   const { width: W, height: H, data } = img;
   const {
     tile = 32,
@@ -49,6 +84,7 @@ export function detectTextRegions(img, opts = {}) {
     minGlyphs = 6,
     maxRegions = 10,
     pad = 4,
+    _satInk = false,
   } = opts;
   const n = W * H;
 
@@ -57,6 +93,14 @@ export function detectTextRegions(img, opts = {}) {
   for (let i = 0; i < n; i++) {
     const o = i * 4;
     lum[i] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+  }
+  // Glow-ink (relaxed mode) only makes sense in a DARK scene: a lit sign at
+  // night. In daylight the same "bright saturated pixel in a darker tile"
+  // rule fires on moss, flowers and whitewater instead.
+  let satInk = _satInk;
+  if (satInk) {
+    const sorted = Float32Array.from(lum).sort();
+    if (sorted[n >> 1] > 65) satInk = false;
   }
   const grad = new Float32Array(n);
   for (let y = 1; y < H - 1; y++) {
@@ -73,6 +117,7 @@ export function detectTextRegions(img, opts = {}) {
   const txN = Math.ceil(W / tile), tyN = Math.ceil(H / tile);
   const tileBg = new Float32Array(txN * tyN).fill(-1); // band mean luma
   const tileBgRgb = new Float32Array(txN * tyN * 3);
+  const tileMean = new Float32Array(txN * tyN); // plain mean luma, all tiles
   const hist = new Float64Array(32);
   const sums = new Float64Array(32 * 4); // per bucket: luma, r, g, b
   for (let ty = 0; ty < tyN; ty++) {
@@ -90,6 +135,9 @@ export function detectTextRegions(img, opts = {}) {
           count++;
         }
       }
+      let lumSum = 0;
+      for (let b = 0; b < 32; b++) lumSum += sums[b * 4];
+      tileMean[ty * txN + tx] = lumSum / count;
       let mode = 0;
       for (let b = 1; b < 32; b++) if (hist[b] > hist[mode]) mode = b;
       const lo = Math.max(0, mode - 1), hi = Math.min(31, mode + 1);
@@ -135,12 +183,32 @@ export function detectTextRegions(img, opts = {}) {
       const t = trow + ((x / tile) | 0);
       if (tileBg[t] < 0) {
         if (lum[i] >= 240) ink[i] = 1;
+        // Relaxed mode: glowing saturated lettering (yellow PALACE bulbs, red
+        // McDonald's script) on a busy dark facade never gets a flat local
+        // background, but it is bright AND vividly colored AND surrounded by
+        // darkness — the tile-mean check kills daylight flowers and billboard
+        // artwork, which are bright all over.
+        else if (satInk && tileMean[t] <= 110) {
+          const mx = Math.max(data[o], data[o + 1], data[o + 2]);
+          const mn = Math.min(data[o], data[o + 1], data[o + 2]);
+          if (mx >= 190 && mx - mn >= 90) ink[i] = 1;
+        }
         continue;
       }
       const dr = Math.abs(data[o] - tileBgRgb[t * 3]);
       const dg = Math.abs(data[o + 1] - tileBgRgb[t * 3 + 1]);
       const db = Math.abs(data[o + 2] - tileBgRgb[t * 3 + 2]);
-      if (Math.max(dr, dg, db) > inkThresh) ink[i] = 1;
+      if (Math.max(dr, dg, db) > inkThresh) { ink[i] = 1; continue; }
+      // Relaxed (LED/billboard) mode: strongly saturated letters sitting on a
+      // bright glowing panel — MOTOWN-red on white-hot backlight — can be
+      // near the background in every channel-delta yet scream in saturation.
+      if (satInk && tileBg[t] >= 140) {
+        const mx = Math.max(data[o], data[o + 1], data[o + 2]);
+        const mn = Math.min(data[o], data[o + 1], data[o + 2]);
+        const bgMx = Math.max(tileBgRgb[t * 3], tileBgRgb[t * 3 + 1], tileBgRgb[t * 3 + 2]);
+        const bgMn = Math.min(tileBgRgb[t * 3], tileBgRgb[t * 3 + 1], tileBgRgb[t * 3 + 2]);
+        if (mx - mn >= 70 && (mx - mn) - (bgMx - bgMn) >= 40) ink[i] = 1;
+      }
     }
   }
 
@@ -192,10 +260,18 @@ export function detectTextRegions(img, opts = {}) {
   for (let a = 0; a < g; a++) {
     for (let b = a + 1; b < g; b++) {
       const A = glyphs[a], B = glyphs[b];
+      // Relaxed mode inks far more non-letter clutter, and unconstrained
+      // chaining welds every sign in a night scene into one frame-sized
+      // cluster. Letters in one sign share a size; junk doesn't — so merge
+      // only similar-height glyphs, and cap the merge gap in absolute pixels
+      // so billboard-scale blobs can't bridge across the street.
+      if (_satInk && Math.min(A.h, B.h) / Math.max(A.h, B.h) < 0.45) continue;
       const hRef = Math.max(3, (A.h + B.h) / 2);
       const gapX = Math.max(0, Math.max(B.x0 - A.x1, A.x0 - B.x1));
       const gapY = Math.max(0, Math.max(B.y0 - A.y1, A.y0 - B.y1));
-      if (gapX < 1.6 * hRef && gapY < 0.9 * hRef) {
+      const capX = _satInk ? Math.min(1.6 * hRef, 16) : 1.6 * hRef;
+      const capY = _satInk ? Math.min(0.9 * hRef, 8) : 0.9 * hRef;
+      if (gapX < capX && gapY < capY) {
         const ra = find(a), rb = find(b);
         if (ra !== rb) parent[ra] = rb;
       }
@@ -227,6 +303,9 @@ export function detectTextRegions(img, opts = {}) {
     if (aspect < 0.2 || aspect > 30) { reject(c, 'aspect'); continue; }
     if (h > 0.6 * H || w > 0.95 * W) { reject(c, 'frame'); continue; }      // don't swallow the frame
     if (w * h > 0.4 * W * H) { reject(c, 'area'); continue; }
+    // Relaxed detections must stay SIGN-sized. A permissive ink rule can weld
+    // half a night skyline into one cluster; a real marquee is a compact strip.
+    if (_satInk && (h > 0.3 * H || w > 0.6 * W || w * h > 0.1 * W * H)) { reject(c, 'signsize'); continue; }
     let inkArea = 0, hSum = 0, h2Sum = 0, wSum = 0, w2Sum = 0, swSum = 0, hwSum = 0;
     for (const gl of c.members) {
       inkArea += gl.area; hSum += gl.h; h2Sum += gl.h * gl.h;
@@ -237,12 +316,15 @@ export function detectTextRegions(img, opts = {}) {
     if (cov < 0.04 || cov > 0.8) { reject(c, 'cov=' + cov.toFixed(2)); continue; }
     const hMean = hSum / m;
     const hCv = Math.sqrt(Math.max(0, h2Sum / m - hMean * hMean)) / hMean;
-    if (hCv > 1.1) { reject(c, 'hCv=' + hCv.toFixed(2)); continue; }
+    // Relaxed mode tolerates more size spread: marquee lettering mixes big
+    // display glyphs with small sub-lines, and neighbouring sign clutter
+    // merges in. The strict row-structure test below still stands guard.
+    if (hCv > (_satInk ? 1.6 : 1.1)) { reject(c, 'hCv=' + hCv.toFixed(2)); continue; }
     // Width spread: letters (and short merged runs) have similar widths;
     // rocks-in-a-river or leaf blobs range from specks to boulders.
     const wMean = wSum / m;
     const wCv = Math.sqrt(Math.max(0, w2Sum / m - wMean * wMean)) / wMean;
-    if (wCv > 1.0) { reject(c, 'wCv=' + wCv.toFixed(2)); continue; }
+    if (wCv > (_satInk ? 1.35 : 1.0)) { reject(c, 'wCv=' + wCv.toFixed(2)); continue; }
     // Tall-and-narrow glyphs in bulk are people/poles/fern fronds, not
     // letters. Small-font letters do run ~2.3 tall (i, l, t), so the cut
     // sits just above that.
