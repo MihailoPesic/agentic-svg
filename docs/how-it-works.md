@@ -99,8 +99,10 @@ high-res trace.
 The base is whichever of these wins, in order — each only replaces the current
 base if it measurably beats it:
 
-1. **VTracer trace** (`trace.js`, `@neplex/vectorizer`) — the default skeleton:
-   clean, layered, semantic.
+1. **Base trace** — the default skeleton: clean, layered, semantic. Usually a
+   VTracer pass (`trace.js`, `@neplex/vectorizer`); candidate runs for
+   screenshots and fine line work use the in-house layered-quantization tracer
+   instead (`layertrace.js`, below).
 2. **Whole-image gradient** (`gradient.js`) — if one fitted linear/radial
    gradient beats the trace RMSE by 15%, use it. A smooth gradient becomes a
    few hundred bytes with zero banding (the radial-gradient test case ships at
@@ -223,6 +225,49 @@ get **two complete runs** — the normal flat-fill pipeline and a
 coarse-skeleton+splats pipeline — and whichever *finished* render scores closer
 wins. Base-stage scores mispredict the final, so the pick happens at the end.
 
+### The layered-quantization tracer (`layertrace.js`)
+
+Color tracers cluster the whole image's colors at once, and that clustering is
+what loses faint detail: a 2-px grid line or an anti-aliased glyph edge is a
+tiny fraction of the pixels, so it merges into its background layer and is gone
+before any path is fit. The layered tracer inverts the architecture:
+
+1. **Median-cut palette** (default K=48) over the pixels, with the cut snapped
+   to a channel-value boundary (splitting inside a run of equal values puts one
+   color in both halves and the palette collapses), plus a Lloyd recenter step
+   so rare-but-distinct colors (dark text on light chrome) separate from the
+   mass.
+2. **One binary VTracer pass per palette color.** Each color's pixels become a
+   black-on-white mask, traced in binary mode — so even a color covering 0.1%
+   of the image gets its own crisp path. Masks trace in parallel batches.
+3. **Stack area-descending** (big background colors first), each layer's paths
+   filled with its palette color.
+
+The input is upscaled 2x **nearest-neighbor** first: a cubic upscale invents
+blended colors (text cores average with their AA halos) and measures ~15x worse
+on screenshots; pixel duplication keeps the palette pure while giving the
+tracer half-pixel geometry. On pixel-doubled input VTracer's spline fitting
+degenerates to polygons anyway, so polygon mode is used outright at about a
+third of the bytes.
+
+This backend owns UI screenshots and fine line work — roughly 10x lower error
+than any single-pass color trace on those classes — at a byte premium, which is
+why it competes as a candidate instead of routing unconditionally.
+
+### Candidate sets
+
+At `high`/`max` several image classes get 2–3 **complete** runs in parallel
+worker threads (`dualrun.js`): the planned route, and per class an alternate
+preset (flat↔fine), the splat pipeline, or the layered tracer. The winner is
+picked on a shared 768-px re-render (work-res scores across different trace
+resolutions aren't comparable), with two adjustments:
+
+- a **bias** so the splat run wins near-ties (smooth shading beats
+  equal-scoring flat fills) and alternates must win by ≥3%;
+- a **byte tiebreak**: within 7% on score, a candidate at least 3x smaller
+  takes the win — and below DSSIM 0.006 every candidate is visually
+  indistinguishable from the source, so the smallest file wins outright.
+
 ## 4. Output and finalize
 
 `Model.toSVG` emits:
@@ -290,8 +335,9 @@ before/after compare slider, an error-convergence chart, and download/copy.
 
 Strong: logos and flat art (clean trace), smooth gradients (fitted as native
 gradients, sub-kilobyte), gradient *objects* like a shaded sphere or sun
-(overlay), UI screenshots (legible text via 2x-trace), and anything one-shot
-tracers flatten or shatter.
+(overlay), UI screenshots and fine line work (the layered tracer keeps text
+and hairlines other tracers cluster away), and anything one-shot tracers
+flatten or shatter.
 
 Honest limits:
 
@@ -300,11 +346,17 @@ Honest limits:
   doesn't yet reconstruct continuous shading across a whole scene (that's
   gradient-mesh / diffusion-curve territory, which SVG can't even represent
   natively without a custom renderer).
-- **Lumpy primitives** — VTracer traces curves as polylines, so a circle can be
-  slightly wavy at high zoom; true primitive/Bezier fitting (detecting a real
-  circle/ellipse) would close that, and is a larger build.
+- **Extreme zoom on screenshot output** — the layered tracer's polygon paths
+  hug quantized pixel boundaries at half-pixel precision; faithful at and below
+  source size, visibly stair-stepped when blown up far past it.
 - Very small text (below ~9px in the source) can still smear — there's a floor
   to what curve fitting can recover.
+
+A note on what's deliberately *not* here: an OCR pass (recognize text, lay an
+invisible `<text>` element over each traced word) would make screenshot output
+searchable and copyable. It needs a recognition dependency and belongs behind
+an opt-in flag if this ever ships as a product; the traced-glyph fidelity above
+doesn't depend on it.
 
 ## File map
 
@@ -315,7 +367,8 @@ Honest limits:
 | `src/core/shapes.js` | triangle / ellipse / rotated rect, region-seeded sampling |
 | `src/core/metrics.js` | RMSE, DSSIM, per-block error map |
 | `src/core/render.js` | SVG -> RGBA via resvg |
-| `src/core/trace.js` | VTracer presets (flat / text / poster) |
+| `src/core/trace.js` | VTracer presets (flat / fine / text / poster / shading) |
+| `src/core/layertrace.js` | layered-quantization tracer (median-cut palette, binary pass per color) |
 | `src/core/gradient.js` | whole-image linear/radial gradient fit |
 | `src/core/regiongradient.js` | per-region gradient fit |
 | `src/core/gradoverlay.js` | gradient overlay on smooth blobs |

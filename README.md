@@ -6,10 +6,11 @@ Normal vectorizers (VTracer, Potrace, Illustrator's Image Trace) do a single pas
 
 It's the same idea as the research vectorizers (LIVE, DiffVG) but without the differentiable CUDA renderer — greedy hill-climbing does the refinement, so it's plain Node and runs on any machine.
 
-Two things here that I haven't seen shipped elsewhere:
+Three things here that I haven't seen shipped together elsewhere:
 
 1. **The converge loop itself.** Every open-source tracer is fire-and-forget; this one measures its own output and fixes the worst parts until a perceptual target is hit.
 2. **Gaussian-splat shading in pure SVG.** SVG has no gradient meshes, so continuous 2D shading is the thing no vectorizer can represent — flat fills posterize it into rings and bands. But an anisotropic 2D Gaussian is exactly an `<ellipse>` filled with a radial gradient. For shading-heavy images the pipeline greedily fits a few hundred soft Gaussian splats (closed-form optimal color per splat, hill-climbed position/scale/rotation/opacity) over a coarse color skeleton, and the result is glossy, band-free shading in a file that opens in any browser or editor. Same representation as the GaussianImage line of research, minus the GPU, plus a standards-compliant output.
+3. **A layered-quantization tracer for screenshots and fine lines.** Color tracers cluster the image's colors globally, and that's exactly where faint detail dies: a hairline grid line or an anti-aliased glyph edge is a tiny fraction of the pixels, so it merges into its background before any path is fit. This tracer builds a median-cut palette (default 48 colors), runs one *binary* trace per color, and stacks the layers — so a color covering 0.1% of the image still gets its own crisp path. Fed nearest-neighbor-doubled pixels (a cubic upscale invents blended colors and measures ~15x worse on text), it lands around 10x lower error than any single-pass tracer on UI screenshots and map linework.
 
 ![comparison](web/hero.png)
 
@@ -21,11 +22,12 @@ Measured by rendering the output SVG back to pixels and comparing to the source 
 
 | image | one-shot trace | agentic-svg | notes |
 | --- | --- | --- | --- |
-| flat logo | 0.0036 | 0.0025 | clean trace plus a few corrections, 5 KB |
-| gradient scene | 0.0357 | 0.0040 | gradient sky recovered |
-| radial gradient | 0.066 | 0.0057 | fitted as a real `<radialGradient>`, 0.8 KB |
-| photo subject | 0.019 | 0.0068 | shading recovered |
-| UI screenshot | unreadable | 0.016 | text stays legible (see below) |
+| flat logo | 0.0032 | 0.0031 | clean trace plus a few corrections, 2 KB |
+| gradient scene | 0.0357 | 0.0039 | gradient sky recovered |
+| radial gradient | 0.0495 | 0.0055 | fitted as a real `<radialGradient>`, 0.9 KB |
+| photo subject | 0.0316 | 0.0159 | shading recovered |
+| UI screenshot | 0.0361 | 0.0008 | text pixel-crisp (layered tracer) |
+| map linework | 0.0117 | 0.0009 | hairline grid lines survive |
 
 ## How it works
 
@@ -54,7 +56,7 @@ A few things worth calling out:
 
 `node scripts/benchmark.js` scores every contender by rendering its SVG at the source resolution and computing DSSIM against the original — same metric, same renderer, no favorites. Baselines are per-image best-of: VTracer gets both its flat and photo presets, imagetracerjs gets default and high-quality settings, and the better result counts. Table lands in `out/benchmark.md`.
 
-Latest run (13 test images, mean DSSIM, lower is better): agentic-svg high **0.0078** vs 0.0178 for best-of-VTracer and 0.0163 for best-of-imagetracerjs — less than half the error of either, best result on 11 of 13 images. Part of that comes from candidate sets: at high quality some image classes get 2-3 complete runs with different presets in parallel worker threads, and the best finished render wins (with a byte tiebreak so a heavier run must earn its size). Honest losses: imagetracerjs still wins the UI screenshot and fine map-line detail, our outputs cost more bytes than the smaller baseline on most images, and high quality trades wall-clock for the candidate runs (~10s mean on this suite). Full table with per-image numbers and the losses spelled out: `out/benchmark.md` after a run.
+Latest run (13 test images, mean DSSIM, lower is better): agentic-svg high **0.0049** vs 0.0178 for best-of-VTracer and 0.0163 for best-of-imagetracerjs — less than a third of the error of either, best result on 11 of 13 images, and the best fidelity-per-kilobyte of every contender (0.32 vs VTracer's 0.35). The two big movers are candidate sets — at high quality some image classes get 2-3 complete runs in parallel worker threads and the best finished render wins, with a byte tiebreak so a heavier run must earn its size — and the layered tracer, which took the UI screenshot and map fixtures from our two worst losses to roughly 10x wins (0.0008 and 0.0009 against imagetracerjs's 0.0126 and 0.0069). Honest notes: our outputs still cost more bytes than the smallest baseline on most images, imagetracerjs edges the logo fixture by 0.0004 (both files are visually exact; ours is smaller), and high quality trades wall-clock for the candidate runs (~4s mean on this suite). Full table with per-image numbers and the losses spelled out: `out/benchmark.md` after a run.
 
 ## Running it
 
@@ -92,6 +94,7 @@ npm test
 | `src/core/metrics.js` | RMSE, DSSIM, per-block error map |
 | `src/core/render.js` | SVG to RGBA via resvg |
 | `src/core/trace.js` | VTracer presets |
+| `src/core/layertrace.js` | layered-quantization tracer (screenshots, fine lines) |
 | `src/core/gradient.js` | fit and emit linear/radial gradients |
 | `src/core/regiongradient.js` | per-region gradient fitting |
 | `src/core/gradoverlay.js` | gradient overlays on smooth blobs |
