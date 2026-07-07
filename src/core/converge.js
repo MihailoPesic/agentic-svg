@@ -20,6 +20,7 @@ import { fitRegionGradients } from './regiongradient.js';
 import { fitGradientOverlay } from './gradoverlay.js';
 import { fitPrimitives } from './pathfit.js';
 import { fitSplats, emitSplatsDeduped } from './splat.js';
+import { layerTrace, nearestUpscale } from './layertrace.js';
 import { chooseTraceLadder, estimateBytes } from './sizegov.js';
 
 /** Strip the outer <svg> wrapper, returning inner markup only. */
@@ -36,6 +37,20 @@ export function innerSvg(svg) {
 async function traceRaw(work, preset) {
   const buf = Buffer.from(work.data.buffer, work.data.byteOffset, work.data.byteLength);
   return vectorizeRaw(buf, { width: work.width, height: work.height }, preset);
+}
+
+/**
+ * Base-trace dispatch. The 'layered' backend quantizes to a K-color palette
+ * and traces each color as its own binary layer — the architecture that wins
+ * on screenshots and fine line work. It needs a NEAREST-neighbor 2x upscale:
+ * cubic resampling invents blended colors that wash the palette out (measured
+ * 15x worse on text).
+ */
+async function traceBase(img, preset, opts) {
+  if (opts.traceBackend === 'layered') {
+    return layerTrace(nearestUpscale(img, 2), { colors: opts.layerK || 48 });
+  }
+  return traceRaw(img, preset);
 }
 
 /**
@@ -98,7 +113,7 @@ export async function converge(input, opts = {}) {
     // object overrides pathfit defaults (photos need tighter tolerances or the
     // 1-2px anti-alias slivers get visibly distorted).
     const pf = (svg) => (opts.pathfitOpts === false ? svg : fitPrimitives(svg, opts.pathfitOpts || {}));
-    let traceSvg = pf(await traceRaw(traceImg, tracePreset));
+    let traceSvg = pf(await traceBase(traceImg, tracePreset, opts));
 
     // Size governor: photographic content can trace to megabytes. When over
     // the byte budget, walk coarser preset rungs and reduced trace resolutions
@@ -107,7 +122,11 @@ export async function converge(input, opts = {}) {
     // we don't pay for every re-trace. 50KB headroom is reserved for the
     // refinement layer.
     const HEADROOM = 50 * 1024;
-    if (Number.isFinite(opts.maxBaseBytes) && estimateBytes(traceSvg).estimatedFinal + HEADROOM > opts.maxBaseBytes) {
+    // The governor's ladder re-traces with VTracer presets, which would
+    // silently swap backends under a layered run — and layered output is
+    // byte-bounded by its K anyway, so it opts out.
+    if (opts.traceBackend !== 'layered'
+      && Number.isFinite(opts.maxBaseBytes) && estimateBytes(traceSvg).estimatedFinal + HEADROOM > opts.maxBaseBytes) {
       const ladder = chooseTraceLadder(tracePreset);
       const cands = [
         { rung: 1, res: 1 }, { rung: 1, res: 0.7 }, { rung: 1, res: 0.57 },
@@ -136,7 +155,13 @@ export async function converge(input, opts = {}) {
 
     let seedData = traceSeed.data;
     baseSvg = traceInner;
-    baseW = traceImg.width; baseH = traceImg.height; refineScale = baseW / W;
+    // Base geometry lives in the trace SVG's own coordinate space — trust its
+    // viewBox over the image dims (the layered backend traces a nearest-2x
+    // canvas, so its coordinates span twice traceImg).
+    const tvb = traceSvg.match(/viewBox="0 0 ([0-9.]+) ([0-9.]+)"/);
+    baseW = tvb ? +tvb[1] : traceImg.width;
+    baseH = tvb ? +tvb[2] : traceImg.height;
+    refineScale = baseW / W;
     let chosenRmse = traceRmse;
 
     // Also try a real gradient base; use it as the seed only if it's clearly

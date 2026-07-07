@@ -199,3 +199,62 @@ test('probeText reports thin-stroke coverage for line art', async () => {
   const b = await analyze(blob);
   assert.ok(b.thinInkFrac < 0.1, `blob thinInkFrac ${b.thinInkFrac}`);
 });
+
+test('nearestUpscale duplicates pixels without inventing colors', async () => {
+  const { nearestUpscale } = await import('../src/core/layertrace.js');
+  const img = {
+    width: 2, height: 2,
+    data: new Uint8ClampedArray([
+      255, 0, 0, 255, 0, 255, 0, 255,
+      0, 0, 255, 255, 40, 40, 40, 255,
+    ]),
+  };
+  const up = nearestUpscale(img, 2);
+  assert.equal(up.width, 4);
+  assert.equal(up.height, 4);
+  const colors = new Set();
+  for (let i = 0; i < up.data.length; i += 4) {
+    colors.add(`${up.data[i]},${up.data[i + 1]},${up.data[i + 2]}`);
+  }
+  assert.equal(colors.size, 4, 'exactly the 4 source colors, nothing blended');
+  // top-left 2x2 block is all red
+  for (const i of [0, 4, 16, 20]) assert.equal(up.data[i], 255);
+});
+
+test('layerTrace keeps every distinct color as its own layer', async () => {
+  const { layerTrace } = await import('../src/core/layertrace.js');
+  // 6 flat 32x64 color bars — a quantizer that collapses the palette
+  // (the classic k-means failure on screenshots) would drop fills here
+  const bars = ['#d03030', '#30c040', '#3050d0', '#e0e030', '#30d0d0', '#202020'];
+  const W = 192, H = 64;
+  const data = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const c = bars[Math.min(5, (x / 32) | 0)];
+      const o = (y * W + x) * 4;
+      data[o] = parseInt(c.slice(1, 3), 16);
+      data[o + 1] = parseInt(c.slice(3, 5), 16);
+      data[o + 2] = parseInt(c.slice(5, 7), 16);
+      data[o + 3] = 255;
+    }
+  }
+  const svg = await layerTrace({ width: W, height: H, data }, { colors: 6 });
+  assert.ok(svg.includes(`viewBox="0 0 ${W} ${H}"`), 'viewBox matches input size');
+  for (const c of bars) {
+    assert.ok(svg.includes(c), `palette color ${c} present in output`);
+  }
+});
+
+test('finalizeSvg preserves filter primitives', async () => {
+  const { finalizeSvg } = await import('../src/core/pipeline.js');
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">'
+    + '<filter id="b" x="-20%" y="-20%" width="140%" height="140%">'
+    + '<feGaussianBlur stdDeviation="2"/>'
+    + '<feComponentTransfer><feFuncA type="linear" slope="8"/></feComponentTransfer>'
+    + '</filter>'
+    + '<g filter="url(#b)"><rect width="64" height="64" fill="#357"/></g></svg>';
+  const out = finalizeSvg(svg);
+  assert.ok(out.includes('feGaussianBlur'), 'blur survives svgo');
+  assert.ok(out.includes('feFuncA'), 'alpha ramp survives svgo');
+  assert.ok(out.includes('filter='), 'filter reference survives svgo');
+});

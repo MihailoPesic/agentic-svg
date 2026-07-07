@@ -93,10 +93,33 @@ export async function convertImage(input, opts = {}) {
       const other = plan.tracePresetName === 'fine' ? 'flat' : 'fine';
       candidates.push({ name: other, opts: { ...common, useSplats: false, tracePreset: TRACE_PRESETS[other] }, bias: 1 / 0.97 });
     }
+    // Layered-quantization backend: median-cut K-color palette, one binary
+    // VTracer pass per color, stacked area-descending. It owns screenshots and
+    // fine line work (~10x lower error on those) at a byte premium, so it
+    // competes as a candidate instead of routing outright — the transparency
+    // floor below keeps it from taking wins a smaller run already nailed.
+    const layered = {
+      name: 'layered-48',
+      opts: { ...common, useSplats: false, traceBackend: 'layered', layerK: 48, traceEnlarge: false, pathfitOpts: false },
+      bias: 1 / 0.97,
+    };
     if (analysis.type === 'text' && !plan.isDocument) {
-      // The 2x-enlarged trace wins on small glyphs but can lose on screenshots
-      // with plenty of non-text chrome; a native-resolution run competes.
-      candidates.push({ name: 'text-native', opts: { ...common, traceEnlarge: false }, bias: 1 / 0.97 });
+      candidates.push(layered);
+      if (quality === 'max') {
+        // The 2x-enlarged trace wins on small glyphs but can lose on
+        // screenshots with plenty of non-text chrome; at max a
+        // native-resolution run competes too.
+        candidates.push({ name: 'text-native', opts: { ...common, traceEnlarge: false }, bias: 1 / 0.97 });
+      }
+    } else if (analysis.type === 'illustration' && !splatEligible && smoothShare < 0.8
+      && (analysis.texture || 0) < 0.25) {
+      // smoothShare >= 0.8 is gradient-base territory — a layered run there is
+      // banding at 50x the bytes, wasted wall-clock (same skip as the splat run).
+      // The texture gate keeps paintings/photos that misroute to illustration
+      // out: 48 binary traces of brushwork emit a multi-megabyte SVG that svgo
+      // then chews on past the timeout, with no fine-line payoff (line-art
+      // keepers measure <=0.14, paintings 0.38+).
+      candidates.push(layered);
     }
   }
 
@@ -133,6 +156,18 @@ export async function convertImage(input, opts = {}) {
       if (i === best) continue;
       if (scores[i] <= scores[best] * 1.07
         && Buffer.byteLength(results[i].svg) * 3 <= Buffer.byteLength(results[best].svg)) best = i;
+    }
+    // Transparency floor: below ~0.006 every candidate is visually
+    // indistinguishable from the source, so a further dssim edge buys nothing
+    // anyone can see — among those, a MATERIALLY smaller file (>=1.3x) wins.
+    // The materiality bar stops sub-kilobyte savings from trading away score
+    // for nothing; the real target is the layered backend's 4x byte premium
+    // on flat art it doesn't need to own.
+    if (scores[best] <= 0.006) {
+      for (let i = 0; i < results.length; i++) {
+        if (scores[i] <= 0.006
+          && Buffer.byteLength(results[i].svg) * 1.3 <= Buffer.byteLength(results[best].svg)) best = i;
+      }
     }
     result = results[best];
     result.metrics.pickedCandidate = candidates[best].name;
